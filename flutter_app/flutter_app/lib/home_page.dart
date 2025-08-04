@@ -94,7 +94,7 @@ Navigator.pushReplacementNamed(context, '/');
   );
   }*/
   Future<void> _loadDashboard() async {
-  const  url = 'https://104.154.141.198:5002/dashboards/mining.html';
+  const  url = 'http://104.154.141.198:5002/dashboards/mining.html';
   Navigator.push(
     context,
     MaterialPageRoute(
