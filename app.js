@@ -9,7 +9,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const PORT = 5001;
+const PORT = 5003;
 
 // Company/region APIs
 app.get('/getcompanies', fetch.getcompanies);
