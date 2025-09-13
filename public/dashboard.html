@@ -6,16 +6,13 @@
   <title>Mining Sensor Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-messaging.js"></script>
-
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 
   <style>
     /* Old Styles (retained as requested) */
     #map {
-      width: 100%; /* Fixed from 200% to prevent overflow */
+      width: 100%;
       height: 400px;
       display: block;
     }
@@ -633,7 +630,7 @@
 </head>
 <body>
   <h1>Mining Sensor Dashboard</h1>
-  
+
   <!-- Header with back button -->
   <div id="panel-header" style="display:none; align-items:center; gap:100px; padding:10px; background:#f7abab;">
     <button onclick="goBack()">⬅ Back</button>
@@ -646,7 +643,7 @@
       <div class="panel-label">Overview</div>
       <img src="images/overview1.jpg" alt="Overview" class="panel-bg">
     </div>
-    <div class="panel-title" onclick="togglePanel('Fuel Management', 'Fuel Management')">
+    <div class="panel-title" onclick="togglePanel('Fuel', 'Fuel Management')">
       <div class="panel-label">Fuel Management</div>
       <img src="images/fm.jpg" alt="Fuel Management" class="panel-bg">
     </div>
@@ -678,584 +675,574 @@
 
   <!-- Hidden panel containers -->
   <div id="view" class="panel-content"></div>
-  <div id="Fuel Management" class="panel-content"></div>
+  <div id="Fuel" class="panel-content"></div>
   <div id="env" class="panel-content"></div>
   <div id="machinery" class="panel-content"></div>
   <div id="worker" class="panel-content"></div>
   <div id="prediction" class="panel-content"></div>
   <div id="Continuous_minier" class="panel-content"></div>
   <div id="Ram_car" class="panel-content"></div>
-  
-  
 
   <script>
-    const params = new URLSearchParams(window.location.search);
-    const sector = params.get('sector') || '';
-    const company = params.get('company') || '';
-    const region = params.get('region') || '';
-    const device_id = params.get('device_id') || '';
-    const API_URL = `http://10.5.48.130:5001/fetch-dashboard-data?company=${encodeURIComponent(company)}&sector=${encodeURIComponent(sector)}&region=${encodeURIComponent(region)}&device_id=${encodeURIComponent(device_id)}`;
-    let cachedData = null;
+  const params = new URLSearchParams(window.location.search);
+  const sector = params.get('sector') || '';
+  const company = params.get('company') || '';
+  const region = params.get('region') || '';
+  const device_id = params.get('device_id') || '';
+  const API_URL = `http://10.5.48.30:5001/fetch-dashboard-data?company=${encodeURIComponent(company)}&sector=${encodeURIComponent(sector)}&region=${encodeURIComponent(region)}&device_id=${encodeURIComponent(device_id)}`;
+  let cachedData = null;
 
-    const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
-    const fmt = (n, dec = 0) => (n == null || isNaN(n)) ? '-' : Number(n).toFixed(dec);
-    const statusClass = (txt = '') => {
-      const v = (txt || '').toString().toLowerCase();
-      if (v.includes('fault') || v.includes('fail') || v.includes('hife')) return 'bad';
-      if (v.includes('warn') || v.includes('alert')) return 'warn';
-      return 'ok';
-    };
-    // Define custom marker icons for excavators (red) and haulers (blue)
-    const redIcon = L.icon({
-      iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-      iconSize: [25, 41],
-      iconAnchor: [12, 41],
-      popupAnchor: [1, -34],
-      shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-      shadowSize: [41, 41]
-    });
+  const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+  const fmt = (n, dec = 0) => (n == null || isNaN(n)) ? '-' : Number(n).toFixed(dec);
+  const statusClass = (txt = '') => {
+    const v = (txt || '').toString().toLowerCase();
+    if (v.includes('fault') || v.includes('fail') || v.includes('hife')) return 'bad';
+    if (v.includes('warn') || v.includes('alert')) return 'warn';
+    return 'ok';
+  };
 
-    const blueIcon = L.icon({
-      iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png',
-      iconSize: [25, 41],
-      iconAnchor: [12, 41],
-      popupAnchor: [1, -34],
-      shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-      shadowSize: [41, 41]
-    });
+  const redIcon = L.icon({
+    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+    shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+    shadowSize: [41, 41]
+  });
 
-    function lineRow({ title, value, unit = '', percent = 0, colorClass = 'c-green' }) {
-      return `
-        <div class="metric-row ${colorClass}">
-          <div class="metric-main">
-            <div class="title">${title}</div>
-            <div class="value">${fmt(value, (unit === 'psi' || unit === 'kW' || unit === 'h' || unit === '°F' || unit === 'V') ? 0 : 0)} <span class="unit">${unit}</span></div>
-            <div class="line"><span style="width:${clamp(percent, 0, 100)}%"></span></div>
-          </div>
+  const blueIcon = L.icon({
+    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png',
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+    shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+    shadowSize: [41, 41]
+  });
+
+  function lineRow({ title, value, unit = '', percent = 0, colorClass = 'c-green' }) {
+    return `
+      <div class="metric-row ${colorClass}">
+        <div class="metric-main">
+          <div class="title">${title}</div>
+          <div class="value">${fmt(value, (unit === 'psi' || unit === 'kW' || unit === 'h' || unit === '°F' || unit === 'V') ? 0 : 0)} <span class="unit">${unit}</span></div>
+          <div class="line"><span style="width:${clamp(percent, 0, 100)}%"></span></div>
         </div>
-      `;
+      </div>
+    `;
+  }
+
+  function batteryRow({ title, value, percent, color = '#1abc9c', colorClass = 'c-green' }) {
+    return `
+      <div class="metric-row ${colorClass}">
+        <div class="donut" style="--p:${clamp(percent, 0, 100)}; --col:${color}">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M2 8a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v1h1.2a.8.8 0 0 1 .8.8v4.4a.8.8 0 0 1-.8.8H19v1a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8zm3 1v6h10V9H5z"/>
+          </svg>
+        </div>
+        <div class="metric-main">
+          <div class="title">${title}</div>
+          <div class="value">${fmt(value, 0)}<span class="unit">%</span></div>
+          <div class="line"><span style="width:${clamp(percent, 0, 100)}%"></span></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function pillRow(title, text) {
+    const cls = statusClass(text);
+    return `
+      <div class="metric-row">
+        <div class="metric-main">
+          <div class="title">${title}</div>
+          <div class="pill ${cls}">${text ?? '-'}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function detailsBox(title, text) {
+    return `
+      <div class="metric-row">
+        <div class="metric-main">
+          <div class="title">${title}</div>
+          <div class="detail-box">${(text && String(text).trim()) ? String(text) : '—'}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function drawVibrationChart(canvas, points, labels, lineColor = '#1abc9c') {
+    if (!canvas) return;
+
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const cssW = canvas.clientWidth || 300;
+    const cssH = canvas.clientHeight || 160;
+    canvas.width = Math.max(1, Math.floor(cssW * dpr));
+    canvas.height = Math.max(1, Math.floor(cssH * dpr));
+
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const pad = { t: 10, r: 8, b: 28, l: 32 };
+    const W = cssW - pad.l - pad.r;
+    const H = cssH - pad.t - pad.b;
+
+    if (!points || points.length < 2 || W <= 0 || H <= 0) {
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted') || '#a8b3c6';
+      ctx.font = '12px system-ui';
+      ctx.fillText('Not enough data for chart', 10, 16);
+      return;
     }
 
-    function batteryRow({ title, value, percent, color = '#1abc9c', colorClass = 'c-green' }) {
-      return `
-        <div class="metric-row ${colorClass}">
-          <div class="donut" style="--p:${clamp(percent, 0, 100)}; --col:${color}">
-            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M2 8a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v1h1.2a.8.8 0 0 1 .8.8v4.4a.8.8 0 0 1-.8.8H19v1a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8zm3 1v6h10V9H5z"/>
-            </svg>
-          </div>
-          <div class="metric-main">
-            <div class="title">${title}</div>
-            <div class="value">${fmt(value, 0)}<span class="unit">%</span></div>
-            <div class="line"><span style="width:${clamp(percent, 0, 100)}%"></span></div>
-          </div>
-        </div>
-      `;
+    const min = Math.min(...points);
+    const max = Math.max(...points);
+    const range = (max - min) || 1;
+    const yMin = Math.floor(min - range * 0.1);
+    const yMax = Math.ceil(max + range * 0.1);
+
+    const axis = getComputedStyle(document.documentElement).getPropertyValue('--track') || '#24364f';
+    const gridCol = 'rgba(255,255,255,0.06)';
+    const textCol = getComputedStyle(document.documentElement).getPropertyValue('--muted') || '#a8b3c6';
+
+    ctx.strokeStyle = gridCol;
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 3; i++) {
+      const y = pad.t + (H * (i / 3));
+      ctx.beginPath();
+      ctx.moveTo(pad.l, y);
+      ctx.lineTo(pad.l + W, y);
+      ctx.stroke();
     }
 
-    function pillRow(title, text) {
-      const cls = statusClass(text);
-      return `
-        <div class="metric-row">
-          <div class="metric-main">
-            <div class="title">${title}</div>
-            <div class="pill ${cls}">${text ?? '-'}</div>
-          </div>
-        </div>
-      `;
-    }
+    ctx.strokeStyle = axis;
+    ctx.beginPath();
+    ctx.moveTo(pad.l, pad.t);
+    ctx.lineTo(pad.l, pad.t + H);
+    ctx.lineTo(pad.l + W, pad.t + H);
+    ctx.stroke();
 
-    function detailsBox(title, text) {
-      return `
-        <div class="metric-row">
-          <div class="metric-main">
-            <div class="title">${title}</div>
-            <div class="detail-box">${(text && String(text).trim()) ? String(text) : '—'}</div>
-          </div>
-        </div>
-      `;
-    }
+    ctx.fillStyle = textCol;
+    ctx.font = '11px system-ui';
+    ctx.textAlign = 'right';
+    ctx.fillText(yMax.toString(), pad.l - 6, pad.t + 10);
+    ctx.fillText(yMin.toString(), pad.l - 6, pad.t + H);
 
-    function drawVibrationChart(canvas, points, labels, lineColor = '#1abc9c') {
-      if (!canvas) return;
+    const nTicks = Math.min(5, labels.length);
+    ctx.textAlign = 'center';
+    ctx.font = '11px system-ui';
+    ctx.fillStyle = textCol;
 
-      const dpr = Math.max(1, window.devicePixelRatio || 1);
-      const cssW = canvas.clientWidth || 300;
-      const cssH = canvas.clientHeight || 160;
-      canvas.width = Math.max(1, Math.floor(cssW * dpr));
-      canvas.height = Math.max(1, Math.floor(cssH * dpr));
-
-      const ctx = canvas.getContext('2d');
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, cssW, cssH);
-
-      const pad = { t: 10, r: 8, b: 28, l: 32 };
-      const W = cssW - pad.l - pad.r;
-      const H = cssH - pad.t - pad.b;
-
-      if (!points || points.length < 2 || W <= 0 || H <= 0) {
-        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted') || '#a8b3c6';
-        ctx.font = '12px system-ui';
-        ctx.fillText('Not enough data for chart', 10, 16);
-        return;
-      }
-
-      const min = Math.min(...points);
-      const max = Math.max(...points);
-      const range = (max - min) || 1;
-      const yMin = Math.floor(min - range * 0.1);
-      const yMax = Math.ceil(max + range * 0.1);
-
-      const axis = getComputedStyle(document.documentElement).getPropertyValue('--track') || '#24364f';
-      const gridCol = 'rgba(255,255,255,0.06)';
-      const textCol = getComputedStyle(document.documentElement).getPropertyValue('--muted') || '#a8b3c6';
-
-      ctx.strokeStyle = gridCol;
-      ctx.lineWidth = 1;
-      for (let i = 0; i <= 3; i++) {
-        const y = pad.t + (H * (i / 3));
-        ctx.beginPath();
-        ctx.moveTo(pad.l, y);
-        ctx.lineTo(pad.l + W, y);
-        ctx.stroke();
-      }
+    for (let i = 0; i < nTicks; i++) {
+      const idx = Math.round(i * (labels.length - 1) / (nTicks - 1 || 1));
+      const x = pad.l + (W * (idx / (labels.length - 1)));
+      const yAxis = pad.t + H;
 
       ctx.strokeStyle = axis;
       ctx.beginPath();
-      ctx.moveTo(pad.l, pad.t);
-      ctx.lineTo(pad.l, pad.t + H);
-      ctx.lineTo(pad.l + W, pad.t + H);
+      ctx.moveTo(x, yAxis);
+      ctx.lineTo(x, yAxis + 4);
       ctx.stroke();
 
-      ctx.fillStyle = textCol;
-      ctx.font = '11px system-ui';
-      ctx.textAlign = 'right';
-      ctx.fillText(yMax.toString(), pad.l - 6, pad.t + 10);
-      ctx.fillText(yMin.toString(), pad.l - 6, pad.t + H);
+      const lab = labels[idx] || '';
+      ctx.fillText(lab, x, yAxis + 16);
+    }
 
-      const nTicks = Math.min(5, labels.length);
-      ctx.textAlign = 'center';
-      ctx.font = '11px system-ui';
-      ctx.fillStyle = textCol;
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    points.forEach((v, i) => {
+      const x = pad.l + (W * (i / (points.length - 1)));
+      const y = pad.t + H - ((v - yMin) / (yMax - yMin)) * H;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
 
-      for (let i = 0; i < nTicks; i++) {
-        const idx = Math.round(i * (labels.length - 1) / (nTicks - 1 || 1));
-        const x = pad.l + (W * (idx / (labels.length - 1)));
-        const yAxis = pad.t + H;
-
-        ctx.strokeStyle = axis;
-        ctx.beginPath();
-        ctx.moveTo(x, yAxis);
-        ctx.lineTo(x, yAxis + 4);
-        ctx.stroke();
-
-        const lab = labels[idx] || '';
-        ctx.fillText(lab, x, yAxis + 16);
-      }
-
-      ctx.strokeStyle = lineColor;
-      ctx.lineWidth = 2;
+    ctx.fillStyle = lineColor;
+    points.forEach((v, i) => {
+      const x = pad.l + (W * (i / (points.length - 1)));
+      const y = pad.t + H - ((v - yMin) / (yMax - yMin)) * H;
       ctx.beginPath();
-      points.forEach((v, i) => {
-        const x = pad.l + (W * (i / (points.length - 1)));
-        const y = pad.t + H - ((v - yMin) / (yMax - yMin)) * H;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      ctx.stroke();
+      ctx.arc(x, y, 2.8, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
 
-      ctx.fillStyle = lineColor;
-      points.forEach((v, i) => {
-        const x = pad.l + (W * (i / (points.length - 1)));
-        const y = pad.t + H - ((v - yMin) / (yMax - yMin)) * H;
-        ctx.beginPath();
-        ctx.arc(x, y, 2.8, 0, Math.PI * 2);
-        ctx.fill();
-      });
+  async function fetchData() {
+    if (cachedData) return cachedData;
+    try {
+      const res = await fetch(API_URL);
+      const json = await res.json();
+      console.log("Fetched data:", json);
+      cachedData = json.data || [];
+      return cachedData;
+    } catch (err) {
+      console.error("Failed to fetch data:", err);
+      return [];
     }
+  }
 
-    async function fetchData() {
-      if (cachedData) return cachedData;
-      try {
-        const res = await fetch(API_URL);
-        const json = await res.json();
-        console.log("Fetched data:", json);
-        cachedData = json.data || [];
-        return cachedData;
-      } catch (err) {
-        console.error("Failed to fetch data:", err);
-        return [];
+  function togglePanel(panelId, panelTitle) {
+    document.querySelectorAll('.panel-content').forEach(c => c.style.display = 'none');
+    document.getElementById('all-panels').style.display = 'none';
+
+    const content = document.getElementById(panelId);
+    if (content) {
+      content.style.display = 'block';
+      renderDashboard(panelId);
+
+      document.getElementById('panel-header').style.display = 'flex';
+      document.getElementById('panel-title').textContent = panelTitle;
+    }
+  }
+
+  function goBack() {
+    document.querySelectorAll('.panel-content').forEach(c => c.style.display = 'none');
+    document.getElementById('panel-header').style.display = 'none';
+    const allPanels = document.getElementById('all-panels');
+    allPanels.style.display = 'flex';
+  }
+
+  function hasValidContent(dataFields) {
+    if (typeof dataFields === 'string') return dataFields.trim() !== '';
+    return dataFields.some(field => field != null && field !== undefined && field !== '');
+  }
+
+  async function renderDashboard(panelId) {
+    const data = await fetchData();
+    const latest = Array.isArray(data) && data.length > 0 ? data[data.length - 1] : {};
+
+    const container = document.getElementById(panelId);
+    container.innerHTML = '';
+
+    function safeAppendChart(grid, label, timestamps, values, color, latestValue) {
+      const hasValidData = values.some(v => v !== null && v !== undefined);
+      if (hasValidData) {
+        grid.appendChild(makeLineChart(label, timestamps, values, color, latestValue));
       }
     }
 
-    function togglePanel(panelId, panelTitle) {
-      document.querySelectorAll('.panel-content').forEach(c => c.style.display = 'none');
-      document.getElementById('all-panels').style.display = 'none';
+    const grid = document.createElement('div');
+    grid.className = panelId === 'view' ? 'dashboard' : 'dashboard-grid';
 
-      const content = document.getElementById(panelId);
-      if (content) {
-        content.style.display = 'block';
-        renderDashboard(panelId);
-
-        document.getElementById('panel-header').style.display = 'flex';
-        document.getElementById('panel-title').textContent = panelTitle;
-      }
-    }
-
-    function goBack() {
-      document.querySelectorAll('.panel-content').forEach(c => c.style.display = 'none');
-      document.getElementById('panel-header').style.display = 'none';
-      const allPanels = document.getElementById('all-panels');
-      allPanels.style.display = 'flex';
-    }
-
-    async function renderDashboard(panelId) {
-      const data = await fetchData();
-      const latest = Array.isArray(data) && data.length > 0 ? data[data.length - 1] : {};
-
-      const container = document.getElementById(panelId);
-      container.innerHTML = '';
-
-      function safeAppendChart(grid, label, timestamps, values, color, latestValue) {
-        const hasValidData = values.some(v => v !== null && v !== undefined);
-        if (hasValidData) {
-          grid.appendChild(makeLineChart(label, timestamps, values, color, latestValue));
-        }
-      }
-      
-      const grid = document.createElement('div');
-      grid.className = panelId === 'view' ? 'dashboard' : 'dashboard-grid';
-
-      if (panelId === 'view') {
-        container.innerHTML = `
-          <div class="dashboard1">
-            <div class="card">
-              <h2 class="text-lg font-semibold mb-4">Open-Pit and Underground Mining</h2>
-              <div id="chart-blast-areas"></div>
-              <div id="chart-development-meters"></div>
-              <div id="chart-production-meters"></div>
-              <div id="chart-ore-mined"></div>
-            </div>
-            <div class="card">
-              <h2 class="text-lg font-semibold mb-4">Crushing & Processing Plant</h2>
-              <div id="chart-throughput"></div>
-              <div id="chart-crusher-availability"></div>
-              <div id="chart-mill-vibration"></div>
-              <div id="chart-power-consumption"></div>
-            </div>
-            <div class="card">
-              <h2 class="text-lg font-semibold mb-4">Contractor Equipment</h2>
-              <div id="chart-dump-trucks"></div>
-              <div id="chart-excavators"></div>
-              <div id="chart-drills"></div><br><br><br>
-              <div class="flex justify-between mb-2 text-lg"><span>Dump Trucks</span><span class="big-value">88%</span></div>
-              <div class="flex justify-between mb-2 text-lg"><span>Excavators</span><span class="big-value">73%</span></div>
-              <div class="flex justify-between text-lg"><span>Drills</span><span class="big-value">61%</span></div>
-            </div>
-            <div class="card">
-              <h2 class="text-lg font-semibold mb-2">Utilization</h2>
-              <div class="value mb-1">27%</div>
-              <div class="sub-label mb-2">Exploration Completed</div>
-              <canvas id="utilizationChart" height="100"></canvas>
-            </div>
-            <div class="card">
-              <h2 class="text-lg font-semibold mb-2">Exploration</h2>
-              <div class="relative w-32 h-32 mx-auto">
-                <canvas id="explorationPie"></canvas>
-                <div class="absolute inset-0 flex items-center justify-center">
-                  <span class="text-2xl font-bold">27%</span>
-                </div>
-              </div>
-              <div class="mt-4 space-y-1 text-base">
-                <p class="sub-label">Exploration Expenditure <span class="big-value block">$380K</span></p>
-                <p class="sub-label">Higher Utilization <span class="big-value block">10.2%</span></p>
-                <p class="sub-label">Completed Targets <span class="big-value block">22</span></p>
+    if (panelId === 'view') {
+      container.innerHTML = `
+        <div class="dashboard1">
+          <div class="card">
+            <h2 class="text-lg font-semibold mb-4">Open-Pit and Underground Mining</h2>
+            <div id="chart-blast-areas"></div>
+            <div id="chart-development-meters"></div>
+            <div id="chart-production-meters"></div>
+            <div id="chart-ore-mined"></div>
+          </div>
+          <div class="card">
+            <h2 class="text-lg font-semibold mb-4">Crushing & Processing Plant</h2>
+            <div id="chart-throughput"></div>
+            <div id="chart-crusher-availability"></div>
+            <div id="chart-mill-vibration"></div>
+            <div id="chart-power-consumption"></div>
+          </div>
+          <div class="card">
+            <h2 class="text-lg font-semibold mb-4">Contractor Equipment</h2>
+            <div id="chart-dump-trucks"></div>
+            <div id="chart-excavators"></div>
+            <div id="chart-drills"></div><br><br><br>
+            <div class="flex justify-between mb-2 text-lg"><span>Dump Trucks</span><span class="big-value">88%</span></div>
+            <div class="flex justify-between mb-2 text-lg"><span>Excavators</span><span class="big-value">73%</span></div>
+            <div class="flex justify-between text-lg"><span>Drills</span><span class="big-value">61%</span></div>
+          </div>
+          <div class="card">
+            <h2 class="text-lg font-semibold mb-2">Utilization</h2>
+            <div class="value mb-1">27%</div>
+            <div class="sub-label mb-2">Exploration Completed</div>
+            <canvas id="utilizationChart" height="100"></canvas>
+          </div>
+          <div class="card">
+            <h2 class="text-lg font-semibold mb-2">Exploration</h2>
+            <div class="relative w-32 h-32 mx-auto">
+              <canvas id="explorationPie"></canvas>
+              <div class="absolute inset-0 flex items-center justify-center">
+                <span class="text-2xl font-bold">27%</span>
               </div>
             </div>
-            <div class="card">
-              <h2 class="text-lg font-semibold mb-4">Production vs. Plan</h2>
-              <div class="space-y-3">
-                <div>
-                  <div class="text-base mb-1">Dump Trucks <span class="float-right font-bold">68%</span></div>
-                  <div class="w-full h-2 bg-gray-800 rounded"><div class="h-2 bg-yellow-400 rounded" style="width: 68%;"></div></div>
-                </div>
-                <div>
-                  <div class="text-base mb-1">Excavators <span class="float-right font-bold">73%</span></div>
-                  <div class="w-full h-2 bg-gray-800 rounded"><div class="h-2 bg-yellow-400 rounded" style="width: 73%;"></div></div>
-                </div>
-                <div>
-                  <div class="text-base mb-1">Drills <span class="float-right font-bold">61%</span></div>
-                  <div class="w-full h-2 bg-gray-800 rounded"><div class="h-2 bg-yellow-400 rounded" style="width: 61%;"></div></div>
-                </div>
-                <div>
-                  <div class="text-base mb-1">Loaders <span class="float-right font-bold">79%</span></div>
-                  <div class="w-full h-2 bg-gray-800 rounded"><div class="h-2 bg-yellow-400 rounded" style="width: 79%;"></div></div>
-                </div>
-              </div>
-            </div>
-            <div class="card">
-              <h2 class="text-lg font-semibold mb-2">Production vs Plan</h2>
-              <canvas id="productionChart" height="120"></canvas>
+            <div class="mt-4 space-y-1 text-base">
+              <p class="sub-label">Exploration Expenditure <span class="big-value block">$380K</span></p>
+              <p class="sub-label">Higher Utilization <span class="big-value block">10.2%</span></p>
+              <p class="sub-label">Completed Targets <span class="big-value block">22</span></p>
             </div>
           </div>
+          <div class="card">
+            <h2 class="text-lg font-semibold mb-4">Production vs. Plan</h2>
+            <div class="space-y-3">
+              <div>
+                <div class="text-base mb-1">Dump Trucks <span class="float-right font-bold">68%</span></div>
+                <div class="w-full h-2 bg-gray-800 rounded"><div class="h-2 bg-yellow-400 rounded" style="width: 68%;"></div></div>
+              </div>
+              <div>
+                <div class="text-base mb-1">Excavators <span class="float-right font-bold">73%</span></div>
+                <div class="w-full h-2 bg-gray-800 rounded"><div class="h-2 bg-yellow-400 rounded" style="width: 73%;"></div></div>
+              </div>
+              <div>
+                <div class="text-base mb-1">Drills <span class="float-right font-bold">61%</span></div>
+                <div class="w-full h-2 bg-gray-800 rounded"><div class="h-2 bg-yellow-400 rounded" style="width: 61%;"></div></div>
+              </div>
+              <div>
+                <div class="text-base mb-1">Loaders <span class="float-right font-bold">79%</span></div>
+                <div class="w-full h-2 bg-gray-800 rounded"><div class="h-2 bg-yellow-400 rounded" style="width: 79%;"></div></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h2 class="text-lg font-semibold mb-2">Production vs Plan</h2>
+            <canvas id="productionChart" height="120"></canvas>
+          </div>
         `;
-        setTimeout(() => {
-          const blastChart = document.getElementById('chart-blast-areas');
-          if (blastChart) {
-            blastChart.appendChild(
-              makeLineChart(
-                'Active Blast Areas',
-                data.map(d => d.timestamp),
-                data.map(d => d.active_blast_areas),
-                '#ff6b6b',
-                `${latest.active_blast_areas || 0}`
-              )
-            );
-          }
+      setTimeout(() => {
+        const blastChart = document.getElementById('chart-blast-areas');
+        if (blastChart) {
+          blastChart.appendChild(
+            makeLineChart(
+              'Active Blast Areas',
+              data.map(d => d.timestamp),
+              data.map(d => d.active_blast_areas),
+              '#ff6b6b',
+              `${latest.active_blast_areas || 0}`
+            )
+          );
+        }
 
-          const devChart = document.getElementById('chart-development-meters');
-          if (devChart) {
-            devChart.appendChild(
-              makeLineChart(
-                'Development Meters',
-                data.map(d => d.timestamp),
-                data.map(d => d.development_meters),
-                '#6bcB77',
-                `${latest.development_meters || 0} m`
-              )
-            );
-          }
+        const devChart = document.getElementById('chart-development-meters');
+        if (devChart) {
+          devChart.appendChild(
+            makeLineChart(
+              'Development Meters',
+              data.map(d => d.timestamp),
+              data.map(d => d.development_meters),
+              '#6bcB77',
+              `${latest.development_meters || 0} m`
+            )
+          );
+        }
 
-          const prodChart = document.getElementById('chart-production-meters');
-          if (prodChart) {
-            prodChart.appendChild(
-              makeLineChart(
-                'Production Meters',
-                data.map(d => d.timestamp),
-                data.map(d => d.production_meters),
-                '#4D96FF',
-                `${latest.production_meters || 0} m`
-              )
-            );
-          }
+        const prodChart = document.getElementById('chart-production-meters');
+        if (prodChart) {
+          prodChart.appendChild(
+            makeLineChart(
+              'Production Meters',
+              data.map(d => d.timestamp),
+              data.map(d => d.production_meters),
+              '#4D96FF',
+              `${latest.production_meters || 0} m`
+            )
+          );
+        }
 
-          const oreChart = document.getElementById('chart-ore-mined');
-          if (oreChart) {
-            oreChart.appendChild(
-              makeLineChart(
-                'Ore Mined',
-                data.map(d => d.timestamp),
-                data.map(d => d.ore_mined),
-                '#FFC300',
-                `${latest.ore_mined || 0} kt`
-              )
-            );
-          }
+        const oreChart = document.getElementById('chart-ore-mined');
+        if (oreChart) {
+          oreChart.appendChild(
+            makeLineChart(
+              'Ore Mined',
+              data.map(d => d.timestamp),
+              data.map(d => d.ore_mined),
+              '#FFC300',
+              `${latest.ore_mined || 0} kt`
+            )
+          );
+        }
 
-          const throughputChart = document.getElementById('chart-throughput');
-          if (throughputChart) {
-            throughputChart.appendChild(
-              makeLineChart(
-                'Throughput',
-                data.map(d => d.timestamp),
-                data.map(d => d.throughput),
-                '#AA96DA',
-                `${latest.throughput || 0} t/hr`
-              )
-            );
-          }
+        const throughputChart = document.getElementById('chart-throughput');
+        if (throughputChart) {
+          throughputChart.appendChild(
+            makeLineChart(
+              'Throughput',
+              data.map(d => d.timestamp),
+              data.map(d => d.throughput),
+              '#AA96DA',
+              `${latest.throughput || 0} t/hr`
+            )
+          );
+        }
 
-          const crusherChart = document.getElementById('chart-crusher-availability');
-          if (crusherChart) {
-            crusherChart.appendChild(
-              makeLineChart(
-                'Crusher Availability',
-                data.map(d => d.timestamp),
-                data.map(d => d.crusher_availability),
-                '#F67280',
-                `${latest.crusher_availability || 0} %`
-              )
-            );
-          }
+        const crusherChart = document.getElementById('chart-crusher-availability');
+        if (crusherChart) {
+          crusherChart.appendChild(
+            makeLineChart(
+              'Crusher Availability',
+              data.map(d => d.timestamp),
+              data.map(d => d.crusher_availability),
+              '#F67280',
+              `${latest.crusher_availability || 0} %`
+            )
+          );
+        }
 
-          const millChart = document.getElementById('chart-mill-vibration');
-          if (millChart) {
-            millChart.appendChild(
-              makeLineChart(
-                'Mill Vibration',
-                data.map(d => d.timestamp),
-                data.map(d => d.mill_vibration),
-                '#355C7D',
-                `${latest.mill_vibration || 0} dB`
-              )
-            );
-          }
+        const millChart = document.getElementById('chart-mill-vibration');
+        if (millChart) {
+          millChart.appendChild(
+            makeLineChart(
+              'Mill Vibration',
+              data.map(d => d.timestamp),
+              data.map(d => d.mill_vibration),
+              '#355C7D',
+              `${latest.mill_vibration || 0} dB`
+            )
+          );
+        }
 
-          const powerChart = document.getElementById('chart-power-consumption');
-          if (powerChart) {
-            powerChart.appendChild(
-              makeLineChart(
-                'Power Consumption',
-                data.map(d => d.timestamp),
-                data.map(d => d.fuel_consumption),
-                '#6bcB77',
-                `${latest.fuel_consumption || 0} kW`
-              )
-            );
-          }
+        const powerChart = document.getElementById('chart-power-consumption');
+        if (powerChart) {
+          powerChart.appendChild(
+            makeLineChart(
+              'Power Consumption',
+              data.map(d => d.timestamp),
+              data.map(d => d.fuel_consumption),
+              '#6bcB77',
+              `${latest.fuel_consumption || 0} kW`
+            )
+          );
+        }
 
-          const dumpChart = document.getElementById('chart-dump-trucks');
-          if (dumpChart) {
-            dumpChart.appendChild(
-              makeLineChart(
-                'Dump Trucks',
-                data.map(d => d.timestamp),
-                data.map(d => d.dump_trucks_utilization),
-                '#6bcB77',
-                `${latest.dump_trucks_utilization || 0} %`
-              )
-            );
-          }
+        const dumpChart = document.getElementById('chart-dump-trucks');
+        if (dumpChart) {
+          dumpChart.appendChild(
+            makeLineChart(
+              'Dump Trucks',
+              data.map(d => d.timestamp),
+              data.map(d => d.dump_trucks_utilization),
+              '#6bcB77',
+              `${latest.dump_trucks_utilization || 0} %`
+            )
+          );
+        }
 
-          const excChart = document.getElementById('chart-excavators');
-          if (excChart) {
-            excChart.appendChild(
-              makeLineChart(
-                'Excavators',
-                data.map(d => d.timestamp),
-                data.map(d => d.excavators_utilization),
-                '#AA96DA',
-                `${latest.excavators_utilization || 0} %`
-              )
-            );
-          }
+        const excChart = document.getElementById('chart-excavators');
+        if (excChart) {
+          excChart.appendChild(
+            makeLineChart(
+              'Excavators',
+              data.map(d => d.timestamp),
+              data.map(d => d.excavators_utilization),
+              '#AA96DA',
+              `${latest.excavators_utilization || 0} %`
+            )
+          );
+        }
 
-          const drillsChart = document.getElementById('chart-drills');
-          if (drillsChart) {
-            drillsChart.appendChild(
-              makeLineChart(
-                'Drills',
-                data.map(d => d.timestamp),
-                data.map(d => d.drills_utilization),
-                '#FFC300',
-                `${latest.drills_utilization || 0} %`
-              )
-            );
-          }
+        const drillsChart = document.getElementById('chart-drills');
+        if (drillsChart) {
+          drillsChart.appendChild(
+            makeLineChart(
+              'Drills',
+              data.map(d => d.timestamp),
+              data.map(d => d.drills_utilization),
+              '#FFC300',
+              `${latest.drills_utilization || 0} %`
+            )
+          );
+        }
 
-          const ctxUtil = document.getElementById('utilizationChart').getContext('2d');
-          new Chart(ctxUtil, {
-            type: 'bar',
-            data: {
-              labels: ['Apr 10', 'Apr 11', 'Apr 12', 'Apr 13', 'Apr 14', 'Apr 15'],
-              datasets: [{
-                data: [8, 12, 16, 24, 21, 27],
-                backgroundColor: '#10b981',
-                borderRadius: 0,
-                barThickness: 12,
-              }]
-            },
-            options: {
-              plugins: { legend: { display: false } },
-              scales: {
-                x: { display: false },
-                y: { beginAtZero: true, display: false }
-              }
+        const ctxUtil = document.getElementById('utilizationChart').getContext('2d');
+        new Chart(ctxUtil, {
+          type: 'bar',
+          data: {
+            labels: ['Apr 10', 'Apr 11', 'Apr 12', 'Apr 13', 'Apr 14', 'Apr 15'],
+            datasets: [{
+              data: [8, 12, 16, 24, 21, 27],
+              backgroundColor: '#10b981',
+              borderRadius: 0,
+              barThickness: 12,
+            }]
+          },
+          options: {
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { display: false },
+              y: { beginAtZero: true, display: false }
             }
-          });
+          }
+        });
 
-          const ctxPie = document.getElementById('explorationPie').getContext('2d');
-          new Chart(ctxPie, {
-            type: 'doughnut',
-            data: {
-              labels: ['Completed', 'Remaining'],
-              datasets: [{
-                data: [27, 73],
-                backgroundColor: ['#3b82f6', '#333333'],
-                borderWidth: 0
-              }]
-            },
-            options: {
-              cutout: '80%',
-              plugins: { legend: { display: false } }
+        const ctxPie = document.getElementById('explorationPie').getContext('2d');
+        new Chart(ctxPie, {
+          type: 'doughnut',
+          data: {
+            labels: ['Completed', 'Remaining'],
+            datasets: [{
+              data: [27, 73],
+              backgroundColor: ['#3b82f6', '#333333'],
+              borderWidth: 0
+            }]
+          },
+          options: {
+            cutout: '80%',
+            plugins: { legend: { display: false } }
+          }
+        });
+
+        const ctxProd = document.getElementById('productionChart').getContext('2d');
+        new Chart(ctxProd, {
+          type: 'bar',
+          data: {
+            labels: ['Apr 10', 'Apr 11', 'Apr 12', 'Apr 13', 'Apr 14', 'Apr 15'],
+            datasets: [{
+              data: [60, 100, 140, 180, 220, 270],
+              backgroundColor: '#3b82f6',
+              borderRadius: 4,
+              barThickness: 14,
+            }]
+          },
+          options: {
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { grid: { display: false }, ticks: { color: '#9ca3af' } },
+              y: { grid: { color: '#333333' }, ticks: { color: '#9ca3af' }, beginAtZero: true }
             }
-          });
+          }
+        });
+      }, 0);
+    }
 
-          const ctxProd = document.getElementById('productionChart').getContext('2d');
-          new Chart(ctxProd, {
-            type: 'bar',
-            data: {
-              labels: ['Apr 10', 'Apr 11', 'Apr 12', 'Apr 13', 'Apr 14', 'Apr 15'],
-              datasets: [{
-                data: [60, 100, 140, 180, 220, 270],
-                backgroundColor: '#3b82f6',
-                borderRadius: 4,
-                barThickness: 14,
-              }]
-            },
-            options: {
-              plugins: { legend: { display: false } },
-              scales: {
-                x: { grid: { display: false }, ticks: { color: '#9ca3af' } },
-                y: { grid: { color: '#333333' }, ticks: { color: '#9ca3af' }, beginAtZero: true }
-              }
-            }
-          });
-        }, 0);
-      }
-     if (panelId === 'Fuel Management') {
-  safeAppendChart(grid, 'Fuel Consumption Trend', data.map(d => d.timestamp), data.map(d => d.fuel_consumption_l_per_100km), '#36A2EB', `${latest.fuel_consumption_l_per_100km || 0} L/100km`);
-  cachedData = null; // Clear cache
+   if (panelId === 'Fuel') {
+    safeAppendChart(grid, 'Fuel Consumption Trend', data.map(d => d.timestamp), data.map(d => d.fuel_consumption_l_per_100km), '#36a2eb', `${latest.fuel_consumption_l_per_100km || 0} L/100km`);
 
-  // Create map container first
+    cachedData = null; // Clear cache
+  
+  // Refetch fresh data immediately
+  fetchData({ device: 'd3', limit: 10, fresh: true }) // Adjust params to your API
+    .then(newData => {
+      // Use newData instead of global 'data'
+      const lastSixRecords = newData
+        .filter(d => d.latitude && d.longitude && d.equipment_name)
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+        .slice(0, 6);
+      console.log("Fresh last 6 records:", lastSixRecords); // Should now include 12:45+ timestamps
+      
+      // Proceed with map creation using newData or update global data
+      createMap(lastSixRecords); // Extract map logic to a function
+    })
+    .catch(err => console.error('Fetch error:', err));
+  
   const mapPanel = document.createElement('div');
   mapPanel.id = 'map';
   mapPanel.style.height = '400px';
-  mapPanel.style.width = '100%'; // Ensure full width
   mapPanel.style.marginTop = '20px';
   grid.appendChild(mapPanel);
-
-  // Fetch fresh data from the server using the correct API_URL
-  fetch(`${API_URL}`, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' }
-  })
-  .then(response => response.json())
-  .then(result => {
-    if (result.status === 'success') {
-      const lastSixRecords = result.data
-        .filter(d => 
-          d.latitude != null && 
-          d.longitude != null && 
-          !isNaN(d.latitude) && 
-          !isNaN(d.longitude) && 
-          d.equipment_name
-        )
-        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-        .slice(0, 6);
-      console.log("Fresh last 6 records:", lastSixRecords);
-      createMap(lastSixRecords);
-    } else {
-      console.error('Failed to fetch dashboard data:', result.error);
-    }
-  })
-  .catch(err => console.error('Fetch error:', err));
+  
+  // Skip fuel chart as before
 }
 
-// Helper function
+// Helper function (define outside if needed)
 function createMap(lastSixRecords) {
   setTimeout(() => {
-    console.log("Map div exists:", document.getElementById('map')); // Debug
     const defaultLat = lastSixRecords.length > 0 ? lastSixRecords[0].latitude : 12.956760;
     const defaultLng = lastSixRecords.length > 0 ? lastSixRecords[0].longitude : 77.731160;
     const map = L.map('map').setView([defaultLat, defaultLng], 15);
-    map.invalidateSize(); // Ensure map renders correctly
-
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors'
     }).addTo(map);
-
+    
     lastSixRecords.forEach(d => {
-      const isExcavator = d.equipment_name.toLowerCase() === 'excavator';
+      const isExcavator = d.equipment_name.toLowerCase().startsWith('excavator');
       const isHauler = d.equipment_name.toLowerCase().startsWith('hauler');
       const markerIcon = isExcavator ? redIcon : isHauler ? blueIcon : null;
       if (markerIcon) {
@@ -1266,453 +1253,520 @@ function createMap(lastSixRecords) {
             Device: ${d.device_id}<br>
             Time: ${d.timestamp}<br>
             Location: Near Electronic City Phase II, Bengaluru<br>
-            Fuel Consumption: ${d.fuel_consumption || 0} liters
-          `);
+            Fuel Consumption: 0 liters/km
+          `); // Added location for context
       } else {
         console.log("Skipped marker for:", d.equipment_name);
       }
     });
-
+    
     if (lastSixRecords.length > 0) {
       const bounds = L.latLngBounds(lastSixRecords.map(d => [d.latitude, d.longitude]));
       map.fitBounds(bounds, { padding: [50, 50] });
     }
-  }, 50); // Reduced timeout for faster rendering
+    setTimeout(() => {
+      map.invalidateSize();
+    }, 500);
+  }, 100);
 }
-      if (panelId === 'env') {
-        safeAppendChart(grid, 'Temperature Trend', data.map(d => d.timestamp), data.map(d => d.temperature), '#ff6b6b', `${latest.temperature || 0} °C`);
-        safeAppendChart(grid, 'Dust Levels', data.map(d => d.timestamp), data.map(d => d.dust), '#ffeaa7', `${latest.dust || 0} µg/m³`);
-        safeAppendChart(grid, 'Air Quality Index', data.map(d => d.timestamp), data.map(d => d.air_quality), '#4ecdc4', `${latest.air_quality || 0} AQI`);
-        safeAppendChart(grid, 'CO₂ Levels', data.map(d => d.timestamp), data.map(d => d.co2_ppm), '#fd79a8', `${latest.co2_ppm || 0} ppm`);
-        safeAppendChart(grid, 'CO PPM', data.map(d => d.timestamp), data.map(d => d.co_ppm), '#ff7675', `${latest.co_ppm || 0} ppm`);
-        safeAppendChart(grid, 'Noise Pollution', data.map(d => d.timestamp), data.map(d => d.noise_pollution_db), '#a29bfe', `${latest.noise_pollution_db || 0} dB`);
-        safeAppendChart(grid, 'Water Level Trend', data.map(d => d.timestamp), data.map(d => d.water_level_m), '#00b894', `${latest.water_level_m || 0} m`);
-        safeAppendChart(grid, 'Seismic Activity', data.map(d => d.timestamp), data.map(d => d.seismic_activity_hz), '#6c5ce7', `${latest.seismic_activity_hz || 0} Hz`);
-      }
-
-      if (panelId === 'machinery') {
-        safeAppendChart(grid, 'Fuel Consumption', data.map(d => d.timestamp), data.map(d => d.fuel_consumption), '#fd79a8', `${latest.fuel_consumption || 0} L/hr`);
-        safeAppendChart(grid, 'Motor Load', data.map(d => d.timestamp), data.map(d => d.motor_load * 100), '#45b7d1', `${(latest.motor_load * 100 || 0).toFixed(1)}%`);
-        safeAppendChart(grid, 'Runtime Trend', data.map(d => d.timestamp), data.map(d => d.machine_runtime), '#96ceb4', `${latest.machine_runtime || 0} sec`);
-        safeAppendChart(grid, 'Battery Status', data.map(d => d.timestamp), data.map(d => d.battery_status), '#ffeaa7', `${latest.battery_status || 0}`);
-        safeAppendChart(grid, 'Equipment Temperature', data.map(d => d.timestamp), data.map(d => d.temperature), '#ff6b6b', `${latest.temperature || 0} °C`);
-        safeAppendChart(grid, 'Pressure Trend', data.map(d => d.timestamp), data.map(d => d.pressure), '#a29bfe', `${latest.pressure || 0} hPa`);
-        safeAppendChart(grid, 'Tyre Pressure', data.map(d => d.timestamp), data.map(d => d.tyre_pressure), '#fab1a0', `${latest.tyre_pressure || 0} psi`);
-        safeAppendChart(grid, 'Load Weight', data.map(d => d.timestamp), data.map(d => d.load_weight), '#00b894', `${latest.load_weight || 0} kg`);
-      }
-
-      if (panelId === 'worker') {
-        safeAppendChart(grid, 'Heart Rate Trend', data.map(d => d.timestamp), data.map(d => d.heart_rate), '#ff6b6b', `${latest.heart_rate || 0} bpm`);
-        safeAppendChart(grid, 'CO Gas Levels', data.map(d => d.timestamp), data.map(d => d.gas_CO), '#fd79a8', `${latest.gas_CO || 0} ppm`);
-        safeAppendChart(grid, 'CO₂ Gas Levels', data.map(d => d.timestamp), data.map(d => d.gas_CO2), '#4ecdc4', `${latest.gas_CO2 || 0} ppm`);
-        safeAppendChart(grid, 'NO₂ Gas Levels', data.map(d => d.timestamp), data.map(d => d.gas_NO2), '#ffeaa7', `${latest.gas_NO2 || 0} ppm`);
-        safeAppendChart(grid, 'H₂S Gas Levels', data.map(d => d.timestamp), data.map(d => d.gas_H2S), '#a29bfe', `${latest.gas_H2S || 0} ppm`);
-        safeAppendChart(grid, 'Worker Temperature', data.map(d => d.timestamp), data.map(d => d.temperature), '#96ceb4', `${latest.temperature || 0} °C`);
-
-       /* const mapPanel = document.createElement('div');
-        mapPanel.id = 'map';
-        mapPanel.style.height = '400px';
-        mapPanel.style.marginTop = '20px';
-        grid.appendChild(mapPanel);
-
-        setTimeout(() => {
-          const map = L.map('map').setView([latest.latitude || 0, latest.longitude || 0], 13);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors'
-          }).addTo(map);
-
-          data.forEach(d => {
-            if (d.latitude && d.longitude) {
-              L.marker([d.latitude, d.longitude])
-                .addTo(map)
-                .bindPopup(`Time: ${d.timestamp}<br>Temp: ${d.temperature} °C`);
-            }
-          });
-
-          setTimeout(() => {
-            map.invalidateSize();
-          }, 200);
-        }, 100);*/
-      }
-
-      if (panelId === 'prediction') {
-        container.innerHTML = `
-          <div class="dashboard1">
-            <div class="card1">
-              <div class="section-title">Mining</div>
-              <div class="value-label"><span>Opencut Grade</span><span>1.20%</span></div>
-              <div class="tiny-chart"><canvas id="chart-opencut-grade"></canvas></div>
-              <div class="value-label"><span>Slump Risk</span><span>57%</span></div>
-              <div class="tiny-chart"><canvas id="chart-slump-risk"></canvas></div>
-              <div class="value-label"><span>Dust Level</span><span>26%</span></div>
-              <div class="tiny-chart"><canvas id="chart-dust-level"></canvas></div>
-              <div class="value-label"><span>Production Forecast</span><span>56%</span></div>
-              <div class="progress-bar"><div style="width: 56%"></div></div>
-              <div class="circular">56%</div>
-            </div>
-            <div class="card1">
-              <div class="section-title">Pipeline Monitoring</div>
-              <div class="value-label"><span>Pressure</span><span>1140 psi</span></div>
-              <div class="tiny-chart"><canvas id="chart1"></canvas></div>
-              <div class="value-label"><span>Flow Rate</span><span>820 m³/h</span></div>
-              <div class="tiny-chart"><canvas id="chart2"></canvas></div>
-              <div class="value-label"><span>Proqueput</span><span>8%</span></div>
-              <div class="tiny-chart"><canvas id="chart3"></canvas></div>
-            </div>
-            <div class="card1">
-              <div class="section-title">Offshore</div>
-              <div class="value-label"><span>Tubing Pressure</span><span>3.460 psi</span></div>
-              <div class="tiny-chart"><canvas id="chart4"></canvas></div>
-              <div class="value-label"><span>Pump Failure</span><span>3%</span></div>
-              <div class="tiny-chart"><canvas id="chart5"></canvas></div>
-            </div>
-            <div class="card1">
-              <div class="section-title">Machinery</div>
-              <div class="value-label"><span>Remaining Useful Life</span><span>320 h</span></div>
-              <div class="bar-segments">
-                <div></div><div></div><div></div><div></div><div></div>
-              </div>
-              <div class="value-label"><span>Maintenance Due</span><span>8%</span></div>
-              <div class="bar-segments">
-                <div></div><div></div><div></div><div></div><div></div>
-              </div>
-            </div>
-            <div class="card1">
-              <div class="section-title">Machinary</div>
-              <div class="value-label"><span>Remaining Useful Life</span><span>320 h</span></div>
-              <div class="bar-segments">
-                <div></div><div></div><div></div><div></div><div></div>
-              </div>
-              <div class="value-label"><span>Fault Probability</span><span>14%</span></div>
-              <div class="tiny-chart"><canvas id="chart6"></canvas></div>
-            </div>
-            <div class="card1">
-              <div class="section-title">Offshore Wells</div>
-              <div class="value-label"><span>Tubing Pressure</span><span>3.460 psi</span></div>
-              <div class="tiny-chart"><canvas id="chart7"></canvas></div>
-              <div class="value-label"><span>Pump Failure Probability</span><span>3%</span></div>
-              <div class="tiny-chart"><canvas id="chart8"></canvas></div>
-            </div>
-          </div>
-        `;
-        setTimeout(() => {
-          const chartConfigs = [
-            { id: 'chart-opencut-grade', data: [1.1, 1.15, 1.18, 1.20, 1.19], label: 'Opencut Grade', unit: '%' },
-            { id: 'chart-slump-risk', data: [50, 52, 55, 57, 56], label: 'Slump Risk', unit: '%' },
-            { id: 'chart-dust-level', data: [20, 22, 24, 26, 25], label: 'Dust Level', unit: '%' },
-            { id: 'chart1', data: [1100, 1120, 1130, 1140, 1135], label: 'Pressure', unit: 'psi' },
-            { id: 'chart2', data: [800, 810, 815, 820, 818], label: 'Flow Rate', unit: 'm³/h' },
-            { id: 'chart3', data: [5, 6, 7, 8, 7.5], label: 'Proqueput', unit: '%' },
-            { id: 'chart4', data: [3400, 3420, 3440, 3460, 3450], label: 'Tubing Pressure', unit: 'psi' },
-            { id: 'chart5', data: [2, 2.5, 2.8, 3, 2.9], label: 'Pump Failure', unit: '%' },
-            { id: 'chart6', data: [10, 11, 12, 14, 13], label: 'Fault Probability', unit: '%' },
-            { id: 'chart7', data: [3400, 3420, 3440, 3460, 3450], label: 'Tubing Pressure', unit: 'psi' },
-            { id: 'chart8', data: [2, 2.5, 2.8, 3, 2.9], label: 'Pump Failure Probability', unit: '%' }
-          ];
-
-          chartConfigs.forEach(config => {
-            const ctx = document.getElementById(config.id)?.getContext('2d');
-            if (ctx) {
-              new Chart(ctx, {
-                type: 'line',
-                data: {
-                  labels: ['T-4', 'T-3', 'T-2', 'T-1', 'Now'],
-                  datasets: [{
-                    label: config.label,
-                    data: config.data,
-                    borderColor: '#00cfff',
-                    borderWidth: 2,
-                    fill: false,
-                    tension: 0.4,
-                    pointRadius: 0
-                  }]
-                },
-                options: {
-                  responsive: true,
-                  plugins: { legend: { display: false } },
-                  scales: {
-                    x: { display: false },
-                    y: { display: false }
-                  }
-                }
-              });
-            }
-          });
-        }, 0);
-      }
-
-      if (panelId === 'Continuous_minier') {
-        container.innerHTML = `
-          <header>
-            <div>CONTINUOUS MINER</div>
-            <div class="sub">Power, Cutter, Hydraulics, PLC</div>
-            <div class="right" id="lastUpdated">—</div>
-          </header>
-          <div class="wrap">
-            <div class="grid"></div>
-          </div>
-        `;
-        renderContinuousMiner(latest, data);
-        return;
-      }
-
-      if (panelId === 'Ram_car') {
-        container.innerHTML = `
-          <header>
-            <div>RAM CAR</div>
-            <div class="sub">Engine, Fluids, Motor Life</div>
-            <div class="right" id="lastUpdated">—</div>
-          </header>
-          <div class="wrap">
-            <div class="grid"></div>
-          </div>
-        `;
-        renderRamCar(latest, data);
-        return;
-      }
-
-      container.appendChild(grid);
+    if (panelId === 'env') {
+      safeAppendChart(grid, 'Temperature Trend', data.map(d => d.timestamp), data.map(d => d.temperature), '#ff6b6b', `${latest.temperature || 0} °C`);
+      safeAppendChart(grid, 'Dust Levels', data.map(d => d.timestamp), data.map(d => d.dust), '#ffeaa7', `${latest.dust || 0} µg/m³`);
+      safeAppendChart(grid, 'Air Quality Index', data.map(d => d.timestamp), data.map(d => d.air_quality), '#4ecdc4', `${latest.air_quality || 0} AQI`);
+      safeAppendChart(grid, 'CO₂ Levels', data.map(d => d.timestamp), data.map(d => d.co2_ppm), '#fd79a8', `${latest.co2_ppm || 0} ppm`);
+      safeAppendChart(grid, 'CO PPM', data.map(d => d.timestamp), data.map(d => d.co_ppm), '#ff7675', `${latest.co_ppm || 0} ppm`);
+      safeAppendChart(grid, 'Noise Pollution', data.map(d => d.timestamp), data.map(d => d.noise_pollution_db), '#a29bfe', `${latest.noise_pollution_db || 0} dB`);
+      safeAppendChart(grid, 'Water Level Trend', data.map(d => d.timestamp), data.map(d => d.water_level_m), '#00b894', `${latest.water_level_m || 0} m`);
+      safeAppendChart(grid, 'Seismic Activity', data.map(d => d.timestamp), data.map(d => d.seismic_activity_hz), '#6c5ce7', `${latest.seismic_activity_hz || 0} Hz`);
     }
 
-    function renderContinuousMiner(latest, history) {
-      const grid = document.querySelector('#Continuous_minier .grid');
-      if (!grid) return;
-      grid.innerHTML = '';
-
-      const pct = {
-        battery: clamp(latest.battery_health ?? 0, 0, 100),
-        voltage: clamp((latest.voltage ?? 0) / 400 * 100, 0, 100),
-        tMotor: clamp((latest.traction_motor_temp ?? 0) / 200 * 100, 0, 100),
-        pick: clamp((latest.pick_wear_monitoring ?? 0), 0, 100),
-        cutterH: clamp((latest.cutter_hours ?? 0) / 4000 * 100, 0, 100),
-        torque: clamp((latest.cutter_motor_torque_kw ?? 0) / 500 * 100, 0, 100),
-        faults: clamp((latest.plc_fault_count ?? 0) / 10 * 100, 0, 100),
-        vib: clamp((latest.vibration_level ?? 0) / 100 * 100, 0, 100),
-        hydP: clamp((latest.hydraulic_pressure_psi ?? 0) / 5000 * 100, 0, 100),
-        hydT: clamp((latest.hydraulic_oil_temp ?? 0) / 200 * 100, 0, 100),
-      };
-
-      function createPanel(id, title, content, colClass = 'col-6') {
-        if (!content) return;
-        const panel = document.createElement('section');
-        panel.className = `panel ${colClass}`;
-        panel.id = id;
-        panel.innerHTML = `<h3>${title}</h3>${content}`;
-        grid.appendChild(panel);
-      }
-
-      let powerContent = '';
-      if (latest.battery_health != null) powerContent += batteryRow({ title: 'Battery Health', value: latest.battery_health, percent: pct.battery, color: '#1abc9c', colorClass: 'c-green' });
-      if (latest.voltage != null) powerContent += lineRow({ title: 'Voltage', value: latest.voltage, unit: 'V', percent: pct.voltage, colorClass: 'c-blue' });
-      if (latest.traction_motor_temp != null) powerContent += lineRow({ title: 'Traction Motor Temp', value: latest.traction_motor_temp, unit: '°F', percent: pct.tMotor, colorClass: 'c-orange' });
-      if (latest.pick_wear_monitoring != null) powerContent += lineRow({ title: 'Pick Wear Monitoring', value: latest.pick_wear_monitoring, unit: '%', percent: pct.pick, colorClass: 'c-yellow' });
-      createPanel('panel-power', 'Power & Electrical Systems', powerContent);
-
-      let cutterContent = '';
-      if (latest.cutter_hours != null) cutterContent += lineRow({ title: 'Cutter Hours', value: latest.cutter_hours, unit: 'h', percent: pct.cutterH, colorClass: 'c-purple' });
-      if (latest.plc_control_panel_status) cutterContent += pillRow('PLC Control Panels', latest.plc_control_panel_status);
-      if (latest.cutter_motor_torque_kw != null) cutterContent += lineRow({ title: 'Torque on Cutter Motor', value: latest.cutter_motor_torque_kw, unit: 'kW', percent: pct.torque, colorClass: 'c-teal' });
-      if (latest.plc_fault_count != null) cutterContent += lineRow({ title: 'PLC Faults', value: latest.plc_fault_count, unit: 'alerts', percent: pct.faults, colorClass: (latest.plc_fault_count > 0 ? 'c-red' : 'c-green') });
-      createPanel('panel-cutter', 'Cutter & Drum Systems', cutterContent);
-
-      let hydContent = '';
-      if (latest.hydraulic_pressure_psi != null) hydContent += lineRow({ title: 'Hydraulic Pressure', value: latest.hydraulic_pressure_psi, unit: 'psi', percent: pct.hydP, colorClass: 'c-blue' });
-      if (latest.hydraulic_oil_level) hydContent += pillRow('Hydraulic Oil Level', latest.hydraulic_oil_level);
-      if (latest.hydraulic_oil_temp != null) hydContent += lineRow({ title: 'Hydraulic Oil Temp', value: latest.hydraulic_oil_temp, unit: '°F', percent: pct.hydT, colorClass: 'c-orange' });
-      if (latest.hydraulic_system_status) hydContent += pillRow('Hydraulic System Status', latest.hydraulic_system_status);
-      createPanel('panel-hydraulic', 'Hydraulic Systems', hydContent, 'col-4');
-
-      if (latest.vibration_level != null) {
-        const safPanel = document.createElement('section');
-        safPanel.className = 'panel col-4';
-        safPanel.id = 'panel-safety';
-
-        const sorted = [...history].sort((a, b) => new Date(a.log_timestamp) - new Date(b.log_timestamp));
-        const last10 = sorted.slice(-10);
-        const points = last10.map(d => Number(d.vibration_level ?? 0));
-        const labels = last10.map(d => {
-          const dt = new Date(d.log_timestamp);
-          if (isNaN(dt)) return '';
-          const mm = String(dt.getMinutes()).padStart(2, '0');
-          const ss = String(dt.getSeconds()).padStart(2, '0');
-          return `${mm}:${ss}`;
-        });
-
-        safPanel.innerHTML = `
-          <h3>Safety &amp; Predictive Maintenance</h3>
-          <div class="chart-wrap">
-            <div class="chart-head">
-              <div class="t">Vibration (last 10 readings)</div>
-              <div class="v">${fmt(latest.vibration_level, 0)}</div>
-            </div>
-            <canvas id="vibrationChart" aria-label="Vibration history line chart"></canvas>
-          </div>
-        `;
-        grid.appendChild(safPanel);
-
-        const canvas = document.getElementById('vibrationChart');
-        drawVibrationChart(canvas, points, labels);
-      }
-
-      let plcContent = '';
-      if (latest.traction_control_status) plcContent += pillRow('Traction Control', latest.traction_control_status);
-      if (latest.cutter_control_status) plcContent += pillRow('Cutter Control', latest.cutter_control_status);
-      if (latest.plc_fault_details) plcContent += detailsBox('PLC Fault Details', latest.plc_fault_details);
-      createPanel('panel-plc', 'PLC & Control Panels', plcContent, 'col-4');
+    if (panelId === 'machinery') {
+      safeAppendChart(grid, 'Fuel Consumption', data.map(d => d.timestamp), data.map(d => d.fuel_consumption), '#fd79a8', `${latest.fuel_consumption || 0} L/hr`);
+      safeAppendChart(grid, 'Motor Load', data.map(d => d.timestamp), data.map(d => d.motor_load * 100), '#45b7d1', `${(latest.motor_load * 100 || 0).toFixed(1)}%`);
+      safeAppendChart(grid, 'Runtime Trend', data.map(d => d.timestamp), data.map(d => d.machine_runtime), '#96ceb4', `${latest.machine_runtime || 0} sec`);
+      safeAppendChart(grid, 'Battery Status', data.map(d => d.timestamp), data.map(d => d.battery_status), '#ffeaa7', `${latest.battery_status || 0}`);
+      safeAppendChart(grid, 'Equipment Temperature', data.map(d => d.timestamp), data.map(d => d.temperature), '#ff6b6b', `${latest.temperature || 0} °C`);
+      safeAppendChart(grid, 'Pressure Trend', data.map(d => d.timestamp), data.map(d => d.pressure), '#a29bfe', `${latest.pressure || 0} hPa`);
+      safeAppendChart(grid, 'Tyre Pressure', data.map(d => d.timestamp), data.map(d => d.tyre_pressure), '#fab1a0', `${latest.tyre_pressure || 0} psi`);
+      safeAppendChart(grid, 'Load Weight', data.map(d => d.timestamp), data.map(d => d.load_weight), '#00b894', `${latest.load_weight || 0} kg`);
     }
 
-    function renderRamCar(latest, history) {
-      const grid = document.querySelector('#Ram_car .grid');
-      if (!grid) return;
-      grid.innerHTML = '';
+    if (panelId === 'worker') {
+      safeAppendChart(grid, 'Heart Rate Trend', data.map(d => d.timestamp), data.map(d => d.heart_rate), '#ff6b6b', `${latest.heart_rate || 0} bpm`);
+      safeAppendChart(grid, 'CO Gas Levels', data.map(d => d.timestamp), data.map(d => d.gas_CO), '#fd79a8', `${latest.gas_CO || 0} ppm`);
+      safeAppendChart(grid, 'CO₂ Gas Levels', data.map(d => d.timestamp), data.map(d => d.gas_CO2), '#4ecdc4', `${latest.gas_CO2 || 0} ppm`);
+      safeAppendChart(grid, 'NO₂ Gas Levels', data.map(d => d.timestamp), data.map(d => d.gas_NO2), '#ffeaa7', `${latest.gas_NO2 || 0} ppm`);
+      safeAppendChart(grid, 'H₂S Gas Levels', data.map(d => d.timestamp), data.map(d => d.gas_H2S), '#a29bfe', `${latest.gas_H2S || 0} ppm`);
+      safeAppendChart(grid, 'Worker Temperature', data.map(d => d.timestamp), data.map(d => d.temperature), '#96ceb4', `${latest.temperature || 0} °C`);
+/*
+      const mapPanel = document.createElement('div');
+      mapPanel.id = 'map';
+      mapPanel.style.height = '400px';
+      mapPanel.style.marginTop = '20px';
+      grid.appendChild(mapPanel);
 
-      const pct = {
-        exhaust: clamp((latest.exhaust_gas_ppm ?? 0) / 500 * 100, 0, 100),
-        engHeat: clamp((latest.engine_heat ?? 0) / 120 * 100, 0, 100),
-        oilP: clamp((latest.oil_pressure_bar ?? 0) / 10 * 100, 0, 100),
-        coolant: clamp((latest.coolant_temperature ?? 0) / 120 * 100, 0, 100),
-        hydOil: clamp((latest.hydraulic_oil_level ?? 0), 0, 100),
-      };
+      setTimeout(() => {
+        const map = L.map('map').setView([latest.latitude || 23.456, latest.longitude || 85.123], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
 
-      function createPanel(id, title, content, colClass = 'col-6') {
-        if (!content) return;
-        const panel = document.createElement('section');
-        panel.className = `panel ${colClass}`;
-        panel.id = id;
-        panel.innerHTML = `<h3>${title}</h3>${content}`;
-        grid.appendChild(panel);
-      }
-
-      let engContent = '';
-      if (latest.exhaust_gas_ppm != null) engContent += lineRow({ title: 'Exhaust Gas', value: latest.exhaust_gas_ppm, unit: 'PPM', percent: pct.exhaust, colorClass: 'c-orange' });
-      if (latest.engine_heat != null) engContent += lineRow({ title: 'Engine Heat', value: latest.engine_heat, unit: '°C', percent: pct.engHeat, colorClass: 'c-red' });
-      if (latest.oil_pressure_bar != null) engContent += lineRow({ title: 'Oil Pressure', value: latest.oil_pressure_bar, unit: 'bar', percent: pct.oilP, colorClass: 'c-blue' });
-      if (latest.coolant_temperature != null) engContent += lineRow({ title: 'Coolant Temp', value: latest.coolant_temperature, unit: '°C', percent: pct.coolant, colorClass: 'c-teal' });
-      createPanel('rc-power', 'Engine & Exhaust', engContent);
-
-      let flContent = '';
-      if (latest.oil_pressure_bar != null) flContent += lineRow({ title: 'Oil Pressure', value: latest.oil_pressure_bar, unit: 'bar', percent: pct.oilP, colorClass: 'c-blue' });
-      if (latest.coolant_temperature != null) flContent += lineRow({ title: 'Coolant Temperature', value: latest.coolant_temperature, unit: '°C', percent: pct.coolant, colorClass: 'c-orange' });
-      if (latest.hydraulic_oil_level != null) flContent += lineRow({ title: 'Hydraulic Oil Level', value: latest.hydraulic_oil_level, unit: '%', percent: pct.hydOil, colorClass: 'c-green' });
-      createPanel('rc-hydraulic', 'Fluids & Cooling', flContent);
-
-      if (latest.engine_heat != null) {
-        const heatPanel = document.createElement('section');
-        heatPanel.className = 'panel col-6';
-        heatPanel.id = 'rc-safety';
-
-        const sorted = [...history].sort((a, b) => new Date(a.log_timestamp) - new Date(b.log_timestamp));
-        const last10 = sorted.slice(-10);
-        const points = last10.map(d => Number(d.engine_heat ?? 0));
-        const labels = last10.map(d => {
-          const dt = new Date(d.log_timestamp);
-          if (isNaN(dt)) return '';
-          const mm = String(dt.getMinutes()).padStart(2, '0');
-          const ss = String(dt.getSeconds()).padStart(2, '0');
-          return `${mm}:${ss}`;
-        });
-
-        heatPanel.innerHTML = `
-          <h3>Engine Heat</h3>
-          <div class="chart-wrap">
-            <div class="chart-head">
-              <div class="t">Engine Heat (last 10 readings)</div>
-              <div class="v">${fmt(latest.engine_heat, 0)} °C</div>
-            </div>
-            <canvas id="engineHeatChart"></canvas>
-          </div>
-        `;
-        grid.appendChild(heatPanel);
-
-        const canvas = document.getElementById('engineHeatChart');
-        drawVibrationChart(canvas, points, labels, '#ff6600');
-      }
-    }
-
-    function makeLineChart(title, labels, values, color = '#4D96FF', valueText = null) {
-      const div = document.createElement('div');
-      div.className = 'card';
-
-      const valueNum = parseFloat(valueText);
-      const { statusColor, statusSymbol, statusLabel } = getStatus(valueNum);
-
-      let html = `<h3 style="font-size: 18px; font-weight: bold;">${title}</h3>`;
-
-      if (valueText !== null) {
-        html += `
-          <div class="flex items-center space-x-2 mb-2 text-base font-semibold text-white">
-            <div class="metric">${valueText}</div>
-            <div class="flex items-center space-x-1">
-              <span style="color:${statusColor};">${statusSymbol}</span>
-              <span>${statusLabel}</span>
-            </div>
-          </div>
-        `;
-      }
-      html += `<canvas></canvas>`;
-      div.innerHTML = html;
-      const formattedLabels = labels.map(label => {
-        const date = new Date(label);
-        if (isNaN(date)) return label;
-        const hours = String(date.getHours()).padStart(2, '0');
-        const minutes = String(date.getMinutes()).padStart(2, '0');
-        return `${hours}:${minutes}`;
-      });
-      const ctx = div.querySelector('canvas').getContext('2d');
-      new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: formattedLabels,
-          datasets: [{
-            label: title,
-            data: values,
-            borderColor: color,
-            backgroundColor: `${color}20`,
-            tension: 0.3,
-            fill: true,
-            borderWidth: 2,
-            pointRadius: 1
-          }]
-        },
-        options: {
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              bodyFont: { size: 40, weight: 'bold' },
-              titleFont: { size: 40, weight: 'bold' }
-            }
-          },
-          scales: {
-            x: { display: true, ticks: { color: '#ccc' }, grid: { display: false } },
-            y: { display: true, grid: { display: false } }
+        data.forEach(d => {
+          if (d.latitude && d.longitude) {
+            L.marker([d.latitude, d.longitude])
+              .addTo(map)
+              .bindPopup(`Time: ${d.timestamp}<br>Temp: ${d.temperature} °C`);
           }
-        }
+        });
+
+        setTimeout(() => {
+          map.invalidateSize();
+        }, 200);
+      }, 100);*/
+    }
+
+    if (panelId === 'prediction') {
+      container.innerHTML = `
+        <div class="dashboard1">
+          <div class="card1">
+            <div class="section-title">Mining</div>
+            <div class="value-label"><span>Opencut Grade</span><span>1.20%</span></div>
+            <div class="tiny-chart"><canvas id="chart-opencut-grade"></canvas></div>
+            <div class="value-label"><span>Slump Risk</span><span>57%</span></div>
+            <div class="tiny-chart"><canvas id="chart-slump-risk"></canvas></div>
+            <div class="value-label"><span>Dust Level</span><span>26%</span></div>
+            <div class="tiny-chart"><canvas id="chart-dust-level"></canvas></div>
+            <div class="value-label"><span>Production Forecast</span><span>56%</span></div>
+            <div class="progress-bar"><div style="width: 56%"></div></div>
+            <div class="circular">56%</div>
+          </div>
+          <div class="card1">
+            <div class="section-title">Pipeline Monitoring</div>
+            <div class="value-label"><span>Pressure</span><span>1140 psi</span></div>
+            <div class="tiny-chart"><canvas id="chart1"></canvas></div>
+            <div class="value-label"><span>Flow Rate</span><span>820 m³/h</span></div>
+            <div class="tiny-chart"><canvas id="chart2"></canvas></div>
+            <div class="value-label"><span>Proqueput</span><span>8%</span></div>
+            <div class="tiny-chart"><canvas id="chart3"></canvas></div>
+          </div>
+          <div class="card1">
+            <div class="section-title">Offshore</div>
+            <div class="value-label"><span>Tubing Pressure</span><span>3.460 psi</span></div>
+            <div class="tiny-chart"><canvas id="chart4"></canvas></div>
+            <div class="value-label"><span>Pump Failure</span><span>3%</span></div>
+            <div class="tiny-chart"><canvas id="chart5"></canvas></div>
+          </div>
+          <div class="card1">
+            <div class="section-title">Machinery</div>
+            <div class="value-label"><span>Remaining Useful Life</span><span>320 h</span></div>
+            <div class="bar-segments">
+              <div></div><div></div><div></div><div></div><div></div>
+            </div>
+            <div class="value-label"><span>Maintenance Due</span><span>8%</span></div>
+            <div class="bar-segments">
+              <div></div><div></div><div></div><div></div><div></div>
+            </div>
+          </div>
+          <div class="card1">
+            <div class="section-title">Machinary</div>
+            <div class="value-label"><span>Remaining Useful Life</span><span>320 h</span></div>
+            <div class="bar-segments">
+              <div></div><div></div><div></div><div></div><div></div>
+            </div>
+            <div class="value-label"><span>Fault Probability</span><span>14%</span></div>
+            <div class="tiny-chart"><canvas id="chart6"></canvas></div>
+          </div>
+          <div class="card1">
+            <div class="section-title">Offshore Wells</div>
+            <div class="value-label"><span>Tubing Pressure</span><span>3.460 psi</span></div>
+            <div class="tiny-chart"><canvas id="chart7"></canvas></div>
+            <div class="value-label"><span>Pump Failure Probability</span><span>3%</span></div>
+            <div class="tiny-chart"><canvas id="chart8"></canvas></div>
+          </div>
+        </div>
+      `;
+      setTimeout(() => {
+        const chartConfigs = [
+          { id: 'chart-opencut-grade', data: [1.1, 1.15, 1.18, 1.20, 1.19], label: 'Opencut Grade', unit: '%' },
+          { id: 'chart-slump-risk', data: [50, 52, 55, 57, 56], label: 'Slump Risk', unit: '%' },
+          { id: 'chart-dust-level', data: [20, 22, 24, 26, 25], label: 'Dust Level', unit: '%' },
+          { id: 'chart1', data: [1100, 1120, 1130, 1140, 1135], label: 'Pressure', unit: 'psi' },
+          { id: 'chart2', data: [800, 810, 815, 820, 818], label: 'Flow Rate', unit: 'm³/h' },
+          { id: 'chart3', data: [5, 6, 7, 8, 7.5], label: 'Proqueput', unit: '%' },
+          { id: 'chart4', data: [3400, 3420, 3440, 3460, 3450], label: 'Tubing Pressure', unit: 'psi' },
+          { id: 'chart5', data: [2, 2.5, 2.8, 3, 2.9], label: 'Pump Failure', unit: '%' },
+          { id: 'chart6', data: [10, 11, 12, 14, 13], label: 'Fault Probability', unit: '%' },
+          { id: 'chart7', data: [3400, 3420, 3440, 3460, 3450], label: 'Tubing Pressure', unit: 'psi' },
+          { id: 'chart8', data: [2, 2.5, 2.8, 3, 2.9], label: 'Pump Failure Probability', unit: '%' }
+        ];
+
+        chartConfigs.forEach(config => {
+          const ctx = document.getElementById(config.id)?.getContext('2d');
+          if (ctx) {
+            new Chart(ctx, {
+              type: 'line',
+              data: {
+                labels: ['T-4', 'T-3', 'T-2', 'T-1', 'Now'],
+                datasets: [{
+                  label: config.label,
+                  data: config.data,
+                  borderColor: '#00cfff',
+                  borderWidth: 2,
+                  fill: false,
+                  tension: 0.4,
+                  pointRadius: 0
+                }]
+              },
+              options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: {
+                  x: { display: false },
+                  y: { display: false }
+                }
+              }
+            });
+          }
+        });
+      }, 0);
+    }
+
+    if (panelId === 'Continuous_minier') {
+      container.innerHTML = `
+        <header>
+          <div>CONTINUOUS MINER</div>
+          <div class="sub">Power, Cutter, Hydraulics, PLC</div>
+          <div class="right" id="lastUpdated">—</div>
+        </header>
+        <div class="wrap">
+          <div class="grid"></div>
+        </div>
+      `;
+      renderContinuousMiner(latest, data);
+      return;
+    }
+
+    if (panelId === 'Ram_car') {
+      container.innerHTML = `
+        <header>
+          <div>RAM CAR</div>
+          <div class="sub">Engine, Fluids, Motor Life</div>
+          <div class="right" id="lastUpdated">—</div>
+        </header>
+        <div class="wrap">
+          <div class="grid"></div>
+        </div>
+      `;
+      renderRamCar(latest, data);
+      return;
+    }
+
+    container.appendChild(grid);
+  }
+
+  function renderContinuousMiner(latest, history) {
+    const grid = document.querySelector('#Continuous_minier .grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+
+    const pct = {
+      battery: clamp(latest.battery_health ?? 0, 0, 100),
+      voltage: clamp((latest.voltage ?? 0) / 400 * 100, 0, 100),
+      tMotor: clamp((latest.traction_motor_temp ?? 0) / 200 * 100, 0, 100),
+      pick: clamp((latest.pick_wear_monitoring ?? 0), 0, 100),
+      cutterH: clamp((latest.cutter_hours ?? 0) / 4000 * 100, 0, 100),
+      torque: clamp((latest.cutter_motor_torque_kw ?? 0) / 500 * 100, 0, 100),
+      faults: clamp((latest.plc_fault_count ?? 0) / 10 * 100, 0, 100),
+      vib: clamp((latest.vibration_level ?? 0) / 100 * 100, 0, 100),
+      hydP: clamp((latest.hydraulic_pressure_psi ?? 0) / 5000 * 100, 0, 100),
+      hydT: clamp((latest.hydraulic_oil_temp ?? 0) / 200 * 100, 0, 100),
+    };
+
+    function createPanel(id, title, content, colClass = 'col-6') {
+      if (!content || !hasValidContent(content)) return;
+      const panel = document.createElement('section');
+      panel.className = `panel ${colClass}`;
+      panel.id = id;
+      panel.innerHTML = `<h3>${title}</h3>${content}`;
+      grid.appendChild(panel);
+    }
+
+    let powerContent = '';
+    if (latest.battery_health != null) powerContent += batteryRow({ title: 'Battery Health', value: latest.battery_health, percent: pct.battery, color: '#1abc9c', colorClass: 'c-green' });
+    if (latest.voltage != null) powerContent += lineRow({ title: 'Voltage', value: latest.voltage, unit: 'V', percent: pct.voltage, colorClass: 'c-blue' });
+    if (latest.traction_motor_temp != null) powerContent += lineRow({ title: 'Traction Motor Temp', value: latest.traction_motor_temp, unit: '°F', percent: pct.tMotor, colorClass: 'c-orange' });
+    if (latest.pick_wear_monitoring != null) powerContent += lineRow({ title: 'Pick Wear Monitoring', value: latest.pick_wear_monitoring, unit: '%', percent: pct.pick, colorClass: 'c-yellow' });
+    createPanel('panel-power', 'Power & Electrical Systems', powerContent);
+
+    let cutterContent = '';
+    if (latest.cutter_hours != null) cutterContent += lineRow({ title: 'Cutter Hours', value: latest.cutter_hours, unit: 'h', percent: pct.cutterH, colorClass: 'c-purple' });
+    if (latest.plc_control_panel_status) cutterContent += pillRow('PLC Control Panels', latest.plc_control_panel_status);
+    if (latest.cutter_motor_torque_kw != null) cutterContent += lineRow({ title: 'Torque on Cutter Motor', value: latest.cutter_motor_torque_kw, unit: 'kW', percent: pct.torque, colorClass: 'c-teal' });
+    if (latest.plc_fault_count != null) cutterContent += lineRow({ title: 'PLC Faults', value: latest.plc_fault_count, unit: 'alerts', percent: pct.faults, colorClass: (latest.plc_fault_count > 0 ? 'c-red' : 'c-green') });
+    createPanel('panel-cutter', 'Cutter & Drum Systems', cutterContent);
+
+    let hydContent = '';
+    if (latest.hydraulic_pressure_psi != null) hydContent += lineRow({ title: 'Hydraulic Pressure', value: latest.hydraulic_pressure_psi, unit: 'psi', percent: pct.hydP, colorClass: 'c-blue' });
+    if (latest.hydraulic_oil_level) hydContent += pillRow('Hydraulic Oil Level', latest.hydraulic_oil_level);
+    if (latest.hydraulic_oil_temp != null) hydContent += lineRow({ title: 'Hydraulic Oil Temp', value: latest.hydraulic_oil_temp, unit: '°F', percent: pct.hydT, colorClass: 'c-orange' });
+    if (latest.hydraulic_system_status) hydContent += pillRow('Hydraulic System Status', latest.hydraulic_system_status);
+    createPanel('panel-hydraulic', 'Hydraulic Systems', hydContent, 'col-4');
+
+    if (latest.vibration_level != null) {
+      const safPanel = document.createElement('section');
+      safPanel.className = 'panel col-4';
+      safPanel.id = 'panel-safety';
+
+      const sorted = [...history].sort((a, b) => new Date(a.log_timestamp) - new Date(b.log_timestamp));
+      const last10 = sorted.slice(-10);
+      const points = last10.map(d => Number(d.vibration_level ?? 0));
+      const labels = last10.map(d => {
+        const dt = new Date(d.log_timestamp);
+        if (isNaN(dt)) return '';
+        const mm = String(dt.getMinutes()).padStart(2, '0');
+        const ss = String(dt.getSeconds()).padStart(2, '0');
+        return `${mm}:${ss}`;
       });
 
-      return div;
+      safPanel.innerHTML = `
+        <h3>Safety &amp; Predictive Maintenance</h3>
+        <div class="chart-wrap">
+          <div class="chart-head">
+            <div class="t">Vibration (last 10 readings)</div>
+            <div class="v">${fmt(latest.vibration_level, 0)}</div>
+          </div>
+          <canvas id="vibrationChart" aria-label="Vibration history line chart"></canvas>
+        </div>
+      `;
+      grid.appendChild(safPanel);
+
+      const canvas = document.getElementById('vibrationChart');
+      drawVibrationChart(canvas, points, labels);
     }
 
-    function getStatus(value) {
-      if (isNaN(value)) {
-        return { statusColor: 'gray', statusSymbol: '•', statusLabel: 'Unknown' };
-      }
-      if (value < 25) {
-        return { statusColor: 'green', statusSymbol: '↓', statusLabel: 'Low' };
-      } else if (value <= 35) {
-        return { statusColor: 'orange', statusSymbol: '→', statusLabel: 'Normal' };
-      } else {
-        return { statusColor: 'red', statusSymbol: '↑', statusLabel: 'High' };
-      }
+    let plcContent = '';
+    if (latest.traction_control_status) plcContent += pillRow('Traction Control', latest.traction_control_status);
+    if (latest.cutter_control_status) plcContent += pillRow('Cutter Control', latest.cutter_control_status);
+    if (latest.plc_fault_details) plcContent += detailsBox('PLC Fault Details', latest.plc_fault_details);
+    createPanel('panel-plc', 'PLC & Control Panels', plcContent, 'col-4');
+
+    if (!grid.innerHTML) {
+      const panelTitle = document.querySelector(`.panel-title[onclick="togglePanel('Continuous_minier', 'Continuous Miner')"]`);
+      if (panelTitle) panelTitle.style.display = 'none';
+    }
+  }
+
+  function renderRamCar(latest, history) {
+    const grid = document.querySelector('#Ram_car .grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+
+    const pct = {
+      exhaust: clamp((latest.exhaust_gas_ppm ?? 0) / 500 * 100, 0, 100),
+      engHeat: clamp((latest.engine_heat ?? 0) / 120 * 100, 0, 100),
+      oilP: clamp((latest.oil_pressure_bar ?? 0) / 10 * 100, 0, 100),
+      coolant: clamp((latest.coolant_temperature ?? 0) / 120 * 100, 0, 100),
+      hydOil: clamp((latest.hydraulic_oil_level ?? 0), 0, 100),
+    };
+
+    function createPanel(id, title, content, colClass = 'col-6') {
+      if (!content || !hasValidContent(content)) return;
+      const panel = document.createElement('section');
+      panel.className = `panel ${colClass}`;
+      panel.id = id;
+      panel.innerHTML = `<h3>${title}</h3>${content}`;
+      grid.appendChild(panel);
     }
 
-    setInterval(() => {
-      cachedData = null;
-      const openPanel = [...document.querySelectorAll('.panel-content')]
-        .find(panel => panel.style.display === 'block');
-      if (openPanel) {
-        renderDashboard(openPanel.id);
+    let engContent = '';
+    if (latest.exhaust_gas_ppm != null) engContent += lineRow({ title: 'Exhaust Gas', value: latest.exhaust_gas_ppm, unit: 'PPM', percent: pct.exhaust, colorClass: 'c-orange' });
+    if (latest.engine_heat != null) engContent += lineRow({ title: 'Engine Heat', value: latest.engine_heat, unit: '°C', percent: pct.engHeat, colorClass: 'c-red' });
+    if (latest.oil_pressure_bar != null) engContent += lineRow({ title: 'Oil Pressure', value: latest.oil_pressure_bar, unit: 'bar', percent: pct.oilP, colorClass: 'c-blue' });
+    if (latest.coolant_temperature != null) engContent += lineRow({ title: 'Coolant Temp', value: latest.coolant_temperature, unit: '°C', percent: pct.coolant, colorClass: 'c-teal' });
+    createPanel('rc-power', 'Engine & Exhaust', engContent);
+
+    let flContent = '';
+    if (latest.oil_pressure_bar != null) flContent += lineRow({ title: 'Oil Pressure', value: latest.oil_pressure_bar, unit: 'bar', percent: pct.oilP, colorClass: 'c-blue' });
+    if (latest.coolant_temperature != null) flContent += lineRow({ title: 'Coolant Temperature', value: latest.coolant_temperature, unit: '°C', percent: pct.coolant, colorClass: 'c-orange' });
+    if (latest.hydraulic_oil_level != null) flContent += lineRow({ title: 'Hydraulic Oil Level', value: latest.hydraulic_oil_level, unit: '%', percent: pct.hydOil, colorClass: 'c-green' });
+    createPanel('rc-hydraulic', 'Fluids & Cooling', flContent);
+
+    if (latest.engine_heat != null) {
+      const heatPanel = document.createElement('section');
+      heatPanel.className = 'panel col-6';
+      heatPanel.id = 'rc-safety';
+
+      const sorted = [...history].sort((a, b) => new Date(a.log_timestamp) - new Date(b.log_timestamp));
+      const last10 = sorted.slice(-10);
+      const points = last10.map(d => Number(d.engine_heat ?? 0));
+      const labels = last10.map(d => {
+        const dt = new Date(d.log_timestamp);
+        if (isNaN(dt)) return '';
+        const mm = String(dt.getMinutes()).padStart(2, '0');
+        const ss = String(dt.getSeconds()).padStart(2, '0');
+        return `${mm}:${ss}`;
+      });
+
+      heatPanel.innerHTML = `
+        <h3>Engine Heat</h3>
+        <div class="chart-wrap">
+          <div class="chart-head">
+            <div class="t">Engine Heat (last 10 readings)</div>
+            <div class="v">${fmt(latest.engine_heat, 0)} °C</div>
+          </div>
+          <canvas id="engineHeatChart"></canvas>
+        </div>
+      `;
+      grid.appendChild(heatPanel);
+
+      const canvas = document.getElementById('engineHeatChart');
+      drawVibrationChart(canvas, points, labels, '#ff6600');
+    }
+
+    if (!grid.innerHTML) {
+      const panelTitle = document.querySelector(`.panel-title[onclick="togglePanel('Ram_car', 'Ram Car')"]`);
+      if (panelTitle) panelTitle.style.display = 'none';
+    }
+  }
+
+  function makeLineChart(title, labels, values, color = '#4D96FF', valueText = null) {
+    const div = document.createElement('div');
+    div.className = 'card';
+
+    const valueNum = parseFloat(valueText);
+    const { statusColor, statusSymbol, statusLabel } = getStatus(valueNum);
+
+    let html = `<h3 style="font-size: 18px; font-weight: bold;">${title}</h3>`;
+
+    if (valueText !== null) {
+      html += `
+        <div class="flex items-center space-x-2 mb-2 text-base font-semibold text-white">
+          <div class="metric">${valueText}</div>
+          <div class="flex items-center space-x-1">
+            <span style="color:${statusColor};">${statusSymbol}</span>
+            <span>${statusLabel}</span>
+          </div>
+        </div>
+      `;
+    }
+    html += `<canvas></canvas>`;
+    div.innerHTML = html;
+    const formattedLabels = labels.map(label => {
+      const date = new Date(label);
+      if (isNaN(date)) return label;
+      const hours = String(date.getHours()).padStart(2, '0');
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      return `${hours}:${minutes}`;
+    });
+    const ctx = div.querySelector('canvas').getContext('2d');
+    new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: formattedLabels,
+        datasets: [{
+          label: title,
+          data: values,
+          borderColor: color,
+          backgroundColor: `${color}20`,
+          tension: 0.3,
+          fill: true,
+          borderWidth: 2,
+          pointRadius: 1
+        }]
+      },
+      options: {
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            bodyFont: { size: 40, weight: 'bold' },
+            titleFont: { size: 40, weight: 'bold' }
+          }
+        },
+        scales: {
+          x: { display: true, ticks: { color: '#ccc' }, grid: { display: false } },
+          y: { display: true, grid: { display: false } }
+        }
       }
-    }, 60000);
-  </script>
+    });
+
+    return div;
+  }
+
+  function getStatus(value) {
+    if (isNaN(value)) {
+      return { statusColor: 'gray', statusSymbol: '•', statusLabel: 'Unknown' };
+    }
+    if (value < 25) {
+      return { statusColor: 'green', statusSymbol: '↓', statusLabel: 'Low' };
+    } else if (value <= 35) {
+      return { statusColor: 'orange', statusSymbol: '→', statusLabel: 'Normal' };
+    } else {
+      return { statusColor: 'red', statusSymbol: '↑', statusLabel: 'High' };
+    }
+  }
+
+  setInterval(() => {
+    cachedData = null;
+    const openPanel = [...document.querySelectorAll('.panel-content')]
+      .find(panel => panel.style.display === 'block');
+    if (openPanel) {
+      renderDashboard(openPanel.id);
+    }
+  }, 60000);
+
+  document.addEventListener('DOMContentLoaded', async () => {
+    await initializeDashboard();
+  });
+
+  async function initializeDashboard() {
+    const data = await fetchData();
+    const latest = Array.isArray(data) && data.length > 0 ? data[data.length - 1] : {};
+
+    checkPanelVisibility('Continuous_minier', latest, [
+      'battery_health', 'voltage', 'traction_motor_temp', 'pick_wear_monitoring',
+      'cutter_hours', 'plc_control_panel_status', 'cutter_motor_torque_kw',
+      'plc_fault_count', 'hydraulic_pressure_psi', 'hydraulic_oil_level',
+      'hydraulic_oil_temp', 'hydraulic_system_status', 'vibration_level',
+      'traction_control_status', 'cutter_control_status', 'plc_fault_details'
+    ]);
+
+    checkPanelVisibility('Ram_car', latest, [
+      'exhaust_gas_ppm', 'engine_heat', 'oil_pressure_bar', 'coolant_temperature',
+      'hydraulic_oil_level'
+    ]);
+
+    checkPanelVisibility('view', latest, [
+      'active_blast_areas', 'development_meters', 'production_meters', 'ore_mined',
+      'throughput', 'crusher_availability', 'mill_vibration', 'fuel_consumption',
+      'dump_trucks_utilization', 'excavators_utilization', 'drills_utilization'
+    ]);
+
+    checkPanelVisibility('Fuel', latest, ['fuel_consumption', 'latitude', 'longitude']);
+    checkPanelVisibility('env', latest, [
+      'temperature', 'dust', 'air_quality', 'co2_ppm', 'co_ppm', 'noise_pollution_db',
+      'water_level_m', 'seismic_activity_hz'
+    ]);
+    checkPanelVisibility('machinery', latest, [
+      'fuel_consumption', 'motor_load', 'machine_runtime', 'battery_status',
+      'temperature', 'pressure', 'tyre_pressure', 'load_weight'
+    ]);
+    checkPanelVisibility('worker', latest, [
+      'heart_rate', 'gas_CO', 'gas_CO2', 'gas_NO2', 'gas_H2S', 'temperature'
+    ]);
+    checkPanelVisibility('prediction', latest, [
+      'opencut_grade', 'slump_risk', 'dust_level', 'production_forecast',
+      'pressure', 'flow_rate', 'proqueput', 'tubing_pressure', 'pump_failure',
+      'remaining_useful_life', 'maintenance_due', 'fault_probability'
+    ]);
+  }
+
+  function checkPanelVisibility(panelId, latest, fields) {
+    const hasValidData = fields.some(field => latest[field] != null && latest[field] !== undefined && latest[field] !== '');
+    const panelTitle = document.querySelector(`.panel-title[onclick="togglePanel('${panelId}', '${panelId === 'view' ? 'Overview' : panelId === 'Continuous_minier' ? 'Continuous Miner' : panelId === 'Ram_car' ? 'Ram Car' : panelId === 'Fuel' ? 'Fuel Management' : panelId === 'env' ? 'ENV Monitoring' : panelId === 'machinery' ? 'Machinery Analysis' : panelId === 'worker' ? 'Worker Safety' : 'Prediction Dashboard'}')"]`);
+    if (panelTitle && !hasValidData) {
+      panelTitle.style.display = 'none';
+    }
+  }
+</script>
 </body>
 </html>
