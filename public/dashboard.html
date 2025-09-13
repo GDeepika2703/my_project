@@ -689,7 +689,7 @@
   const company = params.get('company') || '';
   const region = params.get('region') || '';
   const device_id = params.get('device_id') || '';
-  const API_URL = `http://10.5.48.30:5001/fetch-dashboard-data?company=${encodeURIComponent(company)}&sector=${encodeURIComponent(sector)}&region=${encodeURIComponent(region)}&device_id=${encodeURIComponent(device_id)}`;
+  const API_URL = `http://104.154.141.198:5003/fetch-dashboard-data?company=${encodeURIComponent(company)}&sector=${encodeURIComponent(sector)}&region=${encodeURIComponent(region)}&device_id=${encodeURIComponent(device_id)}`;
   let cachedData = null;
 
   const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
