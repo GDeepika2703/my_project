@@ -1,17 +1,22 @@
+const ExcelJS = require('exceljs');
+const pool = require('../dao/dao');
 const db = require('../dao/dao');
 const nodemailer = require('nodemailer');
 const { MailerSend, EmailParams, Sender, Recipient } = require('mailersend');
 
 const generateRandomNumber = () => Math.floor(1000000 + Math.random() * 9000000);
-/*const admin = require('firebase-admin');
+const admin = require('firebase-admin');
 const serviceAccount = require('../firebase-service-messaging.json');
 
 // Initialize Firebase Admin
 if (!admin.apps.length) {
   admin.initializeApp({
+
     credential: admin.credential.cert(serviceAccount),
   });
-  console.log('Firebase Admin initialized');
+  console.log('Messaging instance:', admin.messaging());
+  console.log('sendMulticast available?', typeof admin.messaging().sendMulticast);
+  console.log('Messaging methods:', Object.getOwnPropertyNames(admin.messaging().__proto__));
 }
 
 // Send push notification helper
@@ -24,26 +29,70 @@ const sendPushNotification = async (token, title, body) => {
     console.error('❌ Error sending notification:', err);
   }
 };
-
 // Register FCM token
 const registerToken = (req, res) => {
-  const { userId, fcmToken } = req.body;
-  console.log('Registering token for userId:', userId);
-  if (!fcmToken) return res.status(400).json({ error: 'FCM token required' });
+  const { userId, fcmToken, region, company } = req.body;
+  if (!userId || !fcmToken || !region || !company) {
+    return res.status(400).json({ error: 'userId, fcmToken, region, and company required' });
+  }
 
-  const query = `
-    INSERT INTO user_tokens (user_id, fcm_token)
-    VALUES (?, ?)
-    ON DUPLICATE KEY UPDATE fcm_token = VALUES(fcm_token)
-  `;
-  db.query(query, [userId, fcmToken], (err) => {
-    if (err) {
-      console.error('❌ DB error in register-token:', err.sqlMessage || err);
-      return res.status(500).json({ error: 'DB error' });
+  // Validate user exists
+  db.query(
+    'SELECT phone_no FROM users WHERE user_id = ? AND company_name = ?',
+    [userId, company],
+    (err, userResults) => {
+      if (err) {
+        console.error('❌ DB error fetching user:', err.sqlMessage || err);
+        return res.status(500).json({ error: 'DB error' });
+      }
+      if (!userResults.length) {
+        return res.status(404).json({ error: `User ${userId} not found for ${company}` });
+      }
+      const phoneNo = userResults[0].phone_no;
+
+      // Get region_id
+      db.query(
+        'SELECT region_id FROM regions WHERE region_name = ? AND company_name = ?',
+        [region, company],
+        (err, regionResults) => {
+          if (err) {
+            console.error('❌ DB error fetching region:', err.sqlMessage || err);
+            return res.status(500).json({ error: 'DB error' });
+          }
+          if (!regionResults.length) {
+            return res.status(404).json({ error: `Region ${region} not found for ${company}` });
+          }
+          const regionId = regionResults[0].region_id;
+
+          // Insert into user_regions (using phone_no)
+          db.query(
+            'INSERT INTO user_regions (phone_no, region_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE region_id = ?',
+            [phoneNo, regionId, regionId],
+            (err) => {
+              if (err) {
+                console.error('❌ DB error in user_regions:', err.sqlMessage || err);
+                return res.status(500).json({ error: 'DB error' });
+              }
+
+              // Insert into user_tokens (under user_id)
+              db.query(
+                'INSERT INTO user_tokens (user_id, fcm_token) VALUES (?, ?) ON DUPLICATE KEY UPDATE fcm_token = ?',
+                [userId, fcmToken, fcmToken],
+                (err) => {
+                  if (err) {
+                    console.error('❌ DB error in user_tokens:', err.sqlMessage || err);
+                    return res.status(500).json({ error: 'DB error' });
+                  }
+                  console.log(`✅ FCM token registered for userId: ${userId} (phone: ${phoneNo}) in region: ${region}`);
+                  res.json({ success: true });
+                }
+              );
+            }
+          );
+        }
+      );
     }
-    console.log(`✅ FCM token registered for userId: ${userId}`);
-    res.json({ success: true });
-  });
+  );
 };
 
 // Utility: distance between coordinates (meters)
@@ -58,285 +107,1107 @@ function getDistance(lat1, lon1, lat2, lon2) {
   return R * c; // Distance in meters
 }
 
-// -------------------- 1️⃣ Dashboard API --------------------
+
 const fetchDashboardData = (req, res) => {
   const { company, region } = req.query;
-  console.log("Dashboard data request:", { company, region });
-
+  
   if (!company || !region) {
-    return res.status(400).json({ error: "Company and region are required" });
+    return res.status(400).json({ error: 'Company and region are required' });
   }
 
-  let regionIds = [];
-  const parsedRegion = parseInt(region);
+  const SEA_LEVEL_RL = 525.5;
 
-  if (!isNaN(parsedRegion)) {
-    regionIds = [parsedRegion];
-    proceedWithQuery();
-  } else {
-    const regionName = region.trim();
-    if (regionName) {
-      const regionQuery =
-        'SELECT region_id FROM regions WHERE region_name = ? AND company_name = ?';
-      db.query(regionQuery, [regionName, company], (err, regionResults) => {
-        if (err) {
-          console.error("❌ Error fetching region ID:", err.sqlMessage || err);
-          return res.status(500).json({ error: "Database error while fetching region ID" });
-        }
-        if (regionResults.length === 0) {
-          return res.status(404).json({ error: `No region found for ${regionName} under ${company}` });
-        }
-        regionIds = regionResults.map(r => r.region_id);
-        proceedWithQuery();
-      });
-      return;
+  const makeRLFn = (altitudeRef) => {
+    if (!Number.isFinite(altitudeRef)) return null;
+    const C = SEA_LEVEL_RL - altitudeRef;
+    return (altitude) => {
+      if (!Number.isFinite(Number(altitude))) return null;
+      return Number((Number(altitude) + C).toFixed(2));
+    };
+  };
+
+  const regionName = region.trim();
+  const isKache = regionName.toLowerCase() === 'kache';
+
+  if (isKache) {
+    let regionIds = [];
+    const parsed = parseInt(region);
+
+    if (!isNaN(parsed)) {
+      regionIds = [parsed];
+      proceedWithKacheQuery();
     } else {
-      return res.status(400).json({ error: "Invalid region value provided" });
+      const regionQuery = `
+        SELECT region_id FROM regions 
+        WHERE region_name = ? AND company_name = ?
+      `;
+      db.query(regionQuery, [regionName, company], (err, results) => {
+        if (err) return res.status(500).json({ error: 'DB error fetching region ID' });
+        if (!results.length) return res.status(404).json({ error: 'Region not found' });
+        regionIds = results.map(r => r.region_id);
+        proceedWithKacheQuery();
+      });
     }
+
+    function proceedWithKacheQuery() {
+      const deviceQuery = `
+        SELECT DISTINCT UPPER(d.device_id) AS device_id
+        FROM realtime_sensor_data d
+        JOIN devices dev ON UPPER(d.device_id) = UPPER(dev.device_id)
+        JOIN regions r ON dev.region_id = r.region_id
+        WHERE r.company_name = ?
+          AND r.region_id IN (?)
+          AND d.device_id IN ('D3','D7','D8','D9','D12')
+      `;
+
+      db.query(deviceQuery, [company, regionIds], (err, devices) => {
+        if (err) return res.status(500).json({ error: 'DB error fetching devices' });
+        const deviceIds = devices.map(d => d.device_id);
+        if (!deviceIds.length) return res.status(404).json({ error: 'No devices found' });
+
+        const placeholders = deviceIds.map(() => '?').join(',');
+
+        /* STEP 1: Get FIRST altitude reading (for RL reference) */
+        const firstAltitudeQuery = `
+          SELECT *
+          FROM (
+            SELECT *,
+                   ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY id ASC) rn
+            FROM realtime_sensor_data
+            WHERE device_id IN (${placeholders})
+              AND altitude IS NOT NULL
+          ) t
+          WHERE rn = 1
+        `;
+
+        db.query(firstAltitudeQuery, deviceIds, (err, firstRows) => {
+          if (err) return res.status(500).json({ error: 'DB error fetching reference altitude' });
+
+          const RL_CALC = {};
+          firstRows.forEach(r => {
+            RL_CALC[r.device_id] = makeRLFn(Number(r.altitude));
+          });
+
+          /* STEP 2A: Latest reading (even if lat/lon = 0,0) */
+          const latestQuery = `
+            SELECT *
+            FROM (
+              SELECT *,
+                     ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY id DESC) rn
+              FROM realtime_sensor_data
+              WHERE device_id IN (${placeholders})
+            ) t
+            WHERE rn = 1
+          `;
+
+          /* STEP 2B: Latest real (non-zero) lat/lon */
+          const lastValidPosQuery = `
+            SELECT *
+            FROM (
+              SELECT *,
+                     ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY id DESC) rn
+              FROM realtime_sensor_data
+              WHERE device_id IN (${placeholders})
+                AND latitude <> 0
+                AND longitude <> 0
+            ) x
+            WHERE rn = 1
+          `;
+
+          db.query(latestQuery, deviceIds, (err, latestRows) => {
+            if (err) return res.status(500).json({ error: 'DB error fetching latest data' });
+
+            db.query(lastValidPosQuery, deviceIds, (err, posRows) => {
+              if (err) return res.status(500).json({ error: 'DB error fetching valid coordinates' });
+
+              const posMap = {};
+              posRows.forEach(r => posMap[r.device_id] = r);
+
+              const sites = {};
+              const haulers = [];
+
+              latestRows.forEach(row => {
+                const pos = posMap[row.device_id];  // get last REAL coordinates
+                
+                const rlFn = RL_CALC[row.device_id];
+
+                if (pos) {
+                  const rl = rlFn ? rlFn(Number(pos.altitude)) : null;
+
+                  sites[row.device_id] = {
+                    id: row.device_id,
+                    timestamp:row.timestamp,
+                    pos: [pos.latitude, pos.longitude],
+                    rl,
+                    bottomRL: rl,
+                    topRL: rl,
+                    altitude: pos.altitude,
+                    pitch: pos.pitch,      // <-- ADD THIS
+                    roll: pos.roll,
+                    speed: pos.speed,
+                    movement: pos.movement,
+                    vibration: pos.vibration
+                  };
+                }
+
+                haulers.push({
+                  id: row.device_id,
+                  timestamp: row.timestamp,
+                  load: row.current_load_tonnes ?? 0,
+                  pitch: row.pitch,    // <-- ADD
+                  roll: row.roll, 
+                  speed: row.speed, 
+                  altitude: row.altitude,    // <-- ADD
+                  outward: [],
+                  inward: []
+                });
+              });
+
+              return res.json({
+                status: 'success',
+                company,
+                region: regionIds,
+                sites,
+                haulers
+              });
+            });
+          });
+        });
+      });
+    }
+    return;
   }
 
-  function proceedWithQuery() {
-    const deviceQuery = `
-      SELECT DISTINCT UPPER(d.device_id) as device_id
-      FROM dummy d
-      INNER JOIN devices dev ON UPPER(d.device_id) = UPPER(dev.device_id)
-      INNER JOIN regions r ON dev.region_id = r.region_id
-      WHERE r.company_name = ? AND r.region_id IN (?)
-      GROUP BY UPPER(d.device_id)
+  /* OTHER REGIONS (unchanged) */
+  const deviceQuery = `
+    SELECT d.device_id
+    FROM devices d
+    JOIN regions r ON d.region_id = r.region_id
+    WHERE r.company_name = ?
+      AND r.region_name = ?
+  `;
+
+  db.query(deviceQuery, [company, regionName], (err, devices) => {
+    if (err) return res.status(500).json({ error: 'DB error fetching devices' });
+    if (!devices.length) return res.status(404).json({ error: 'No devices found' });
+
+    const deviceIds = devices.map(d => d.device_id);
+    const placeholders = deviceIds.map(() => '?').join(',');
+
+    const sensorQuery = `
+      SELECT *
+      FROM dummy
+      WHERE device_id IN (${placeholders})
+      ORDER BY timestamp DESC
+      LIMIT 6
     `;
-    db.query(deviceQuery, [company, regionIds], (err, deviceResults) => {
-      if (err) {
-        console.error("❌ Error fetching devices:", err.sqlMessage || err);
-        return res.status(500).json({ error: "Database error while fetching devices" });
-      }
-      if (deviceResults.length === 0) {
-        return res.status(404).json({ error: "No devices found for this company/region" });
-      }
-      const deviceIds = deviceResults.map(d => d.device_id);
 
-      const placeholders = deviceIds.map(() => "?").join(",");
-      const sensorQuery = `
-        SELECT *
-        FROM dummy
-        WHERE device_id IN (${placeholders})
-        ORDER BY timestamp DESC
-        LIMIT 5
-      `;
-      db.query(sensorQuery, deviceIds, (err, sensorResults) => {
-        if (err) {
-          console.error("❌ Error fetching dummy sensor data:", err.sqlMessage || err);
-          return res.status(500).json({ error: "Database error while fetching dummy sensor data" });
-        }
-        if (sensorResults.length === 0) {
-          return res.status(404).json({ error: "No dummy sensor data found for this region" });
-        }
+    db.query(sensorQuery, deviceIds, (err, sensorResults) => {
+      if (err) return res.status(500).json({ error: 'DB error fetching dummy data' });
 
-        res.json({ status: "success", company, region: regionIds, data: sensorResults });
+      return res.json({
+        status: 'success',
+        company,
+        region: regionName,
+        devices: deviceIds,
+        data: sensorResults
       });
     });
-  }
+  });
 };
-// -------------------- 2️⃣ Push Notification Background Job --------------------
-// Separate cooldown maps for clarity
-const notifiedExcavatorsNearby = new Map(); // For "haulers nearby" notifications
-const notifiedExcavatorsNoHaulers = new Map(); // For "no haulers" notifications
-const COOLDOWN_MS = 10*60 * 1000; // 10 minutes
-const NEARBY_THRESHOLD = 100; // meters
-
-async function runPushNotificationJob() {
-  console.log("🟡 Running push notification job...");
-  try {
-    // Fetch sensor data
-    const sensorResults = await new Promise((resolve, reject) => {
-      db.query(
-        `SELECT * FROM dummy ORDER BY timestamp DESC LIMIT 200`,
-        (err, rows) => (err ? reject(err) : resolve(rows))
-      );
-    });
-    console.log("Fetched rows:", sensorResults.length);
-    console.log("Sample row:", sensorResults[0]);
-
-    const excavators = sensorResults.filter(
-      d => d.equipment_name?.toLowerCase() === 'excavator' &&
-           d.latitude != null && d.longitude != null &&
-           d.device_id === 'd3'
-    );
-    const haulers = sensorResults.filter(
-      d => d.equipment_name?.toLowerCase().startsWith('hauler') &&
-           d.latitude != null && d.longitude != null
-    );
-    console.log("Excavators found (d3 only):", excavators.length);
-    console.log("Haulers found:", haulers.length);
-
-    // Fetch FCM tokens
-    const tokenRows = await new Promise((resolve, reject) => {
-      db.query(`SELECT user_id, fcm_token FROM user_tokens WHERE user_id = 'd3'`,
-        (err, rows) => (err ? reject(err) : resolve(rows))
-      );
-    });
-    const tokenMap = tokenRows.reduce((m, r) => { m[r.user_id] = r.fcm_token; return m; }, {});
-    console.log("Tokens fetched for d3:", tokenRows.length);
-
-    const now = Date.now();
-    const seenDevices = new Set();
-
-    for (const exc of excavators) {
-      if (seenDevices.has(exc.device_id)) {
-        console.log(`⏭️ Skipping duplicate excavator ${exc.device_id}`);
-        continue;
-      }
-      seenDevices.add(exc.device_id);
-
-      const distances = haulers.map(h =>
-        getDistance(exc.latitude, exc.longitude, h.latitude, h.longitude)
-      );
-      const nearby = distances.some(d => d <= NEARBY_THRESHOLD);
-      const token = tokenMap[exc.device_id];
-      console.log(`👉 Checking excavator ${exc.device_id}, ` +
-                  `coords: (${exc.latitude}, ${exc.longitude}), ` +
-                  `nearby? ${nearby}, ` +
-                  `distances: [${distances.slice(0, 3).join(', ')}]..., ` +
-                  `token: ${token ? 'FOUND' : 'MISSING'}`);
-
-      if (nearby) {
-        const lastNotifiedNearby = notifiedExcavatorsNearby.get(exc.device_id) || 0;
-        console.log(`Last 'Haulers Nearby' notification for ${exc.device_id}: ${new Date(lastNotifiedNearby)}`);
-        if (now - lastNotifiedNearby > COOLDOWN_MS) {
-          if (token) {
-            console.log(`📨 Sending 'Haulers Nearby' push to ${exc.device_id}`);
-            await sendPushNotification(
-              token,
-              'Haulers Nearby! 🚚',
-              `Excavator ${exc.equipment_name} has haulers within ${NEARBY_THRESHOLD}m`
-            );
-            notifiedExcavatorsNearby.set(exc.device_id, now);
-          } else {
-            console.log(`⚠️ No FCM token for excavator ${exc.device_id} (nearby case)`);
-          }
-        } else {
-          console.log(`⏳ Cooldown active for 'Haulers Nearby' on ${exc.device_id}`);
-        }
-        if (notifiedExcavatorsNoHaulers.has(exc.device_id)) {
-          console.log(`✅ Resetting 'No Haulers Nearby' cooldown for ${exc.device_id}`);
-          notifiedExcavatorsNoHaulers.delete(exc.device_id);
-        }
-      } else {
-        const lastNotifiedNoHaulers = notifiedExcavatorsNoHaulers.get(exc.device_id) || 0;
-        console.log(`Evaluating 'No Haulers Nearby' for ${exc.device_id}, last notified: ${new Date(lastNotifiedNoHaulers)}`);
-        if (now - lastNotifiedNoHaulers > COOLDOWN_MS) {
-          if (token) {
-            console.log(`📨 Sending 'No Haulers Nearby' push to ${exc.device_id}`);
-            await sendPushNotification(
-              token,
-              'No Haulers Nearby 🚨',
-              `Excavator ${exc.equipment_name} has no haulers within ${NEARBY_THRESHOLD}m`
-            );
-            notifiedExcavatorsNoHaulers.set(exc.device_id, now);
-          } else {
-            console.log(`⚠️ No FCM token for excavator ${exc.device_id} (no haulers case)`);
-          }
-        } else {
-          console.log(`⏳ Cooldown active for 'No Haulers Nearby' on ${exc.device_id}`);
-        }
-        if (notifiedExcavatorsNearby.has(exc.device_id)) {
-          console.log(`✅ Resetting 'Haulers Nearby' cooldown for ${exc.device_id}`);
-          notifiedExcavatorsNearby.delete(exc.device_id);
-        }
-      }
-    }
-  } catch (err) {
-    console.error('❌ Push notification job failed:', err);
-  }
+// Add these constants at the top of your file
+// Add this constant at the top
+// -------- GRADIENT MULTIPLIER (based on pitch) --------
+function getGradientMultiplier(pitch = 0) {
+  if (pitch <= -5) return 0.25;        // Downhill
+  if (pitch > -5 && pitch <= 3) return 0.65; // Flat
+  if (pitch > 3 && pitch <= 8) return 1.3;   // Mild uphill
+  return 2.0;                          // Steep uphill
 }
 
-// ---- Start the job automatically when the backend starts ----
-setInterval(runPushNotificationJob, 60 * 1000); // runs every 1 minute
+// -------- SPEED MULTIPLIER --------
+function getSpeedMultiplier(speed = 0) {
+  if (speed <= 5) return 0.9;      // Idle / slow
+  if (speed <= 20) return 1.0;     // Normal
+  if (speed <= 35) return 1.1;     // Loaded
+  return 1.25;                     // Overspeed / stress
+}
 
-*/
-/*
-const sendStatusMailToUser = async (toEmail, userName, status) => {
-  try {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      host: 'smtp.gmail.com',
-      secure: false,
-      port: 587,
-      auth: {
-        user: 'haritha@velastra.co',
-        pass: 'zbch zaom fcxs kmlf',
-      },
-      tls: { rejectUnauthorized: false },
-    });
+// Diesel price per liter
+const DIESEL_PRICE_PER_LITER = 94.5; // ₹ per liter
 
-    const mailOptions = {
-      from: 'haritha@velastra.co',
-      to: toEmail,
-      subject: `Your Registration Status: ${status.toUpperCase()}`,
-      text: `Hello ${userName},\n\nYour registration status is now: ${status.toUpperCase()}.\n\nThank you,\nVelastra Team`,
-    };
+// Haversine formula to calculate distance between two coordinates
+function haversineKm(coord1, coord2) {
+  const toRad = x => (x * Math.PI) / 180;
+  const R = 6371; // km
+  const dLat = toRad(coord2[0] - coord1[0]);
+  const dLon = toRad(coord2[1] - coord1[1]);
+  const lat1 = toRad(coord1[0]);
+  const lat2 = toRad(coord2[0]);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ Status mail sent to ${toEmail}:`, info.response);
-  } catch (error) {
-    console.error('❌ Error sending status mail to user:', error);
+function calculateFuelAndCost(distance, pitch, speed, deviceId, timeDiffHours = 0) {
+  let fuel = 0;
+
+  // Excavator (time based – unchanged)
+  if (deviceId === 'D7') {
+    fuel = 15 * timeDiffHours;
+  } 
+  // Haulers (distance + gradient + speed based)
+  else if (distance > 0) {
+    const gradientMultiplier = getGradientMultiplier(pitch);
+    const speedMultiplier = getSpeedMultiplier(speed);
+
+    fuel =
+      (distance / 1.52) *
+      gradientMultiplier *
+      speedMultiplier;
   }
+
+  const cost = fuel * DIESEL_PRICE_PER_LITER;
+
+  return {
+    fuel: parseFloat(fuel.toFixed(6)),
+    cost: parseFloat(cost.toFixed(2))
+  };
+}
+
+
+// Updated fetchLast24HoursData function
+const fetchLast24HoursData = (req, res) => {
+  const { device_id, company, region } = req.query;
+  
+  if (!device_id) {
+    return res.status(400).json({ error: 'Device ID is required' });
+  }
+
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const formattedTime = twentyFourHoursAgo.toISOString().slice(0, 19).replace('T', ' ');
+  
+  const query = `
+    SELECT 
+      device_id,
+      latitude,
+      longitude,
+      altitude,
+      timestamp,
+      pitch,
+      roll,
+      speed,
+      movement,
+      vibration
+    FROM realtime_sensor_data 
+    WHERE device_id = ? 
+      AND timestamp >= ?
+      AND latitude IS NOT NULL 
+      AND longitude IS NOT NULL
+      AND latitude != 0 
+      AND longitude != 0
+    ORDER BY timestamp ASC
+  `;
+  
+  db.query(query, [device_id, formattedTime], (err, results) => {
+    if (err) {
+      console.error('❌ Database error fetching 24-hour data:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    
+    const pathData = [];
+    let previousPoint = null;
+    let totalDistance = 0;
+    let totalFuel = 0;
+    let totalFuelCost = 0;
+    
+    results.forEach((row, index) => {
+      // Calculate distance from previous point
+      let distance = 0;
+      let timeDiffHours = 0;
+      
+      if (previousPoint) {
+        distance = haversineKm(
+          [previousPoint.latitude, previousPoint.longitude],
+          [row.latitude, row.longitude]
+        );
+        
+        // Calculate time difference for excavator
+        if (device_id === 'D7') {
+          const currentTime = new Date(row.timestamp);
+          const prevTime = new Date(previousPoint.timestamp);
+          timeDiffHours = (currentTime - prevTime) / 3600000; // hours
+        }
+      }
+      totalDistance += distance;
+      
+      // Calculate fuel and cost (SIMPLE CALCULATION)
+      const result = calculateFuelAndCost(
+        distance,
+        row.pitch || 0,
+        row.speed || 0,
+        device_id,
+        timeDiffHours
+      );
+
+      
+      totalFuel += result.fuel;
+      totalFuelCost += result.cost;
+      
+      const pointData = {
+        pos: [row.latitude, row.longitude],
+        timestamp: row.timestamp,
+        altitude: row.altitude || 0,
+        pitch: row.pitch || 0,
+        roll: row.roll || 0,
+        speed: row.speed || 0,
+        movement: row.movement || 0,
+        vibration: row.vibration || 0,
+        rl: row.altitude ? (row.altitude + 525.5) : null,
+        distance: parseFloat(distance.toFixed(6)),
+        fuel: result.fuel,
+        fuel_cost: result.cost, // ✅ This should now have values
+        cumulative_distance: parseFloat(totalDistance.toFixed(6)),
+        cumulative_fuel: parseFloat(totalFuel.toFixed(6)),
+        cumulative_fuel_cost: parseFloat(totalFuelCost.toFixed(2))
+      };
+      
+      pathData.push(pointData);
+      previousPoint = row;
+    });
+    
+    console.log(`✅ Fetched ${pathData.length} data points for device ${device_id}`);
+    console.log(`💰 Fuel cost calculation: Total = ₹${totalFuelCost.toFixed(2)}`);
+    
+    // Debug: Show first calculation
+    if (pathData.length > 1) {
+      console.log('First fuel cost calculation:', {
+        distance: pathData[1].distance,
+        fuel: pathData[1].fuel,
+        calculated_cost: pathData[1].fuel * DIESEL_PRICE_PER_LITER,
+        stored_cost: pathData[1].fuel_cost
+      });
+    }
+    
+    res.json({
+      status: 'success',
+      device_id,
+      data: pathData,
+      count: pathData.length,
+      totals: {
+        total_distance: parseFloat(totalDistance.toFixed(4)),
+        total_fuel: parseFloat(totalFuel.toFixed(4)),
+        total_fuel_cost: parseFloat(totalFuelCost.toFixed(2)),
+        fuel_price_per_liter: DIESEL_PRICE_PER_LITER,
+        currency: 'INR (₹)'
+      },
+      time_range: {
+        from: formattedTime,
+        to: new Date().toISOString()
+      }
+    });
+  });
+};
+
+// Updated fetchAllDevicesLast24Hours function
+const fetchAllDevicesLast24Hours = (req, res) => {
+  const { company, region } = req.query;
+  
+  if (!company || !region) {
+    return res.status(400).json({ error: 'Company and region are required' });
+  }
+
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const formattedTime = twentyFourHoursAgo.toISOString().slice(0, 19).replace('T', ' ');
+  
+  const deviceQuery = `
+    SELECT DISTINCT UPPER(d.device_id) AS device_id
+    FROM realtime_sensor_data d
+    JOIN devices dev ON UPPER(d.device_id) = UPPER(dev.device_id)
+    JOIN regions r ON dev.region_id = r.region_id
+    WHERE r.company_name = ?
+      AND r.region_name = ?
+      AND d.device_id IN ('D3','D7','D8','D9','D12')
+  `;
+  
+  db.query(deviceQuery, [company, region], (err, devices) => {
+    if (err) {
+      console.error('❌ Database error fetching devices:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    
+    if (!devices.length) {
+      return res.json({
+        status: 'success',
+        data: {},
+        count: 0
+      });
+    }
+    
+    const deviceIds = devices.map(d => d.device_id);
+    const placeholders = deviceIds.map(() => '?').join(',');
+    
+    const dataQuery = `
+      SELECT 
+        device_id,
+        latitude,
+        longitude,
+        altitude,
+        timestamp,
+        pitch,
+        roll,
+        speed,
+        movement,
+        vibration
+      FROM realtime_sensor_data 
+      WHERE device_id IN (${placeholders})
+        AND timestamp >= ?
+        AND latitude IS NOT NULL 
+        AND longitude IS NOT NULL
+        AND latitude != 0 
+        AND longitude != 0
+      ORDER BY device_id, timestamp ASC
+    `;
+    
+    const queryParams = [...deviceIds, formattedTime];
+    
+    db.query(dataQuery, queryParams, (err, results) => {
+      if (err) {
+        console.error('❌ Database error fetching 24-hour data:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      const groupedData = {};
+      const deviceTotals = {};
+      
+      deviceIds.forEach(id => {
+        groupedData[id] = [];
+        deviceTotals[id] = {
+          totalDistance: 0,
+          totalFuel: 0,
+          totalFuelCost: 0,
+          previousPoint: null
+        };
+      });
+      
+      results.forEach(row => {
+        const deviceId = row.device_id;
+        
+        if (!groupedData[deviceId]) {
+          groupedData[deviceId] = [];
+          deviceTotals[deviceId] = {
+            totalDistance: 0,
+            totalFuel: 0,
+            totalFuelCost: 0,
+            previousPoint: null
+          };
+        }
+        
+        let distance = 0;
+        let timeDiffHours = 0;
+        
+        if (deviceTotals[deviceId].previousPoint) {
+          const prev = deviceTotals[deviceId].previousPoint;
+          
+          distance = haversineKm(
+            [prev.latitude, prev.longitude],
+            [row.latitude, row.longitude]
+          );
+          
+          if (deviceId === 'D7') {
+            const currentTime = new Date(row.timestamp);
+            const prevTime = new Date(prev.timestamp);
+            timeDiffHours = (currentTime - prevTime) / 3600000;
+          }
+        }
+        
+        // SIMPLE FUEL AND COST CALCULATION
+        let fuel = 0;
+
+        if (deviceId === 'D7') {
+          fuel = 15 * timeDiffHours;
+        } else if (distance > 0) {
+          const gradientMultiplier = getGradientMultiplier(row.pitch || 0);
+          const speedMultiplier = getSpeedMultiplier(row.speed || 0);
+
+          fuel =
+            (distance / 1.52) *
+            gradientMultiplier *
+            speedMultiplier;
+        }
+
+        const cost = fuel * DIESEL_PRICE_PER_LITER;
+
+        
+        deviceTotals[deviceId].totalDistance += distance;
+        deviceTotals[deviceId].totalFuel += fuel;
+        deviceTotals[deviceId].totalFuelCost += cost;
+        
+        const pointData = {
+          pos: [row.latitude, row.longitude],
+          timestamp: row.timestamp,
+          altitude: row.altitude || 0,
+          pitch: row.pitch || 0,
+          roll: row.roll || 0,
+          speed: row.speed || 0,
+          movement: row.movement || 0,
+          vibration: row.vibration || 0,
+          rl: row.altitude ? (row.altitude + 525.5) : null,
+          distance: parseFloat(distance.toFixed(6)),
+          fuel: parseFloat(fuel.toFixed(6)),
+          fuel_cost: parseFloat(cost.toFixed(2)), // ✅ Simple calculation
+          cumulative_distance: parseFloat(deviceTotals[deviceId].totalDistance.toFixed(6)),
+          cumulative_fuel: parseFloat(deviceTotals[deviceId].totalFuel.toFixed(6)),
+          cumulative_fuel_cost: parseFloat(deviceTotals[deviceId].totalFuelCost.toFixed(2))
+        };
+        
+        groupedData[deviceId].push(pointData);
+        deviceTotals[deviceId].previousPoint = row;
+      });
+      
+      console.log(`✅ Fetched 24-hour data for devices: ${deviceIds.join(', ')}`);
+      
+      let overallTotalDistance = 0;
+      let overallTotalFuel = 0;
+      let overallTotalFuelCost = 0;
+      
+      for (const deviceId in deviceTotals) {
+        overallTotalDistance += deviceTotals[deviceId].totalDistance;
+        overallTotalFuel += deviceTotals[deviceId].totalFuel;
+        overallTotalFuelCost += deviceTotals[deviceId].totalFuelCost;
+      }
+      
+      res.json({
+        status: 'success',
+        company,
+        region,
+        data: groupedData,
+        device_count: deviceIds.length,
+        total_points: results.length,
+        totals: {
+          overall_distance: parseFloat(overallTotalDistance.toFixed(4)),
+          overall_fuel: parseFloat(overallTotalFuel.toFixed(4)),
+          overall_fuel_cost: parseFloat(overallTotalFuelCost.toFixed(2)),
+          fuel_price_per_liter: DIESEL_PRICE_PER_LITER,
+          currency: 'INR (₹)',
+          by_device: Object.keys(deviceTotals).reduce((acc, deviceId) => {
+            acc[deviceId] = {
+              total_distance: parseFloat(deviceTotals[deviceId].totalDistance.toFixed(4)),
+              total_fuel: parseFloat(deviceTotals[deviceId].totalFuel.toFixed(4)),
+              total_fuel_cost: parseFloat(deviceTotals[deviceId].totalFuelCost.toFixed(2))
+            };
+            return acc;
+          }, {})
+        },
+        time_range: {
+          from: formattedTime,
+          to: new Date().toISOString()
+        }
+      });
+    });
+  });
+};
+// ==================== MONTHLY DATA ENDPOINTS ====================
+
+// Single device monthly data (last 30 days)
+const fetchLast30DaysData = (req, res) => {
+  const { device_id, company, region } = req.query;
+  
+  if (!device_id) {
+    return res.status(400).json({ error: 'Device ID is required' });
+  }
+
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const formattedTime = thirtyDaysAgo.toISOString().slice(0, 19).replace('T', ' ');
+  
+  const query = `
+    SELECT 
+      device_id,
+      latitude,
+      longitude,
+      altitude,
+      timestamp,
+      pitch,
+      roll,
+      speed,
+      movement,
+      vibration
+    FROM realtime_sensor_data 
+    WHERE device_id = ? 
+      AND timestamp >= ?
+      AND latitude IS NOT NULL 
+      AND longitude IS NOT NULL
+      AND latitude != 0 
+      AND longitude != 0
+    ORDER BY timestamp ASC
+  `;
+  
+  db.query(query, [device_id, formattedTime], (err, results) => {
+    if (err) {
+      console.error('❌ Database error fetching 30-day data:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    
+    const pathData = [];
+    let previousPoint = null;
+    let totalDistance = 0;
+    let totalFuel = 0;
+    let totalFuelCost = 0;
+    
+    results.forEach((row, index) => {
+      let distance = 0;
+      let timeDiffHours = 0;
+      
+      if (previousPoint) {
+        distance = haversineKm(
+          [previousPoint.latitude, previousPoint.longitude],
+          [row.latitude, row.longitude]
+        );
+        
+        if (device_id === 'D7') {
+          const currentTime = new Date(row.timestamp);
+          const prevTime = new Date(previousPoint.timestamp);
+          timeDiffHours = (currentTime - prevTime) / 3600000;
+        }
+      }
+      totalDistance += distance;
+      
+      const result = calculateFuelAndCost(distance, device_id, timeDiffHours);
+      
+      totalFuel += result.fuel;
+      totalFuelCost += result.cost;
+      
+      const pointData = {
+        pos: [row.latitude, row.longitude],
+        timestamp: row.timestamp,
+        altitude: row.altitude || 0,
+        pitch: row.pitch || 0,
+        roll: row.roll || 0,
+        speed: row.speed || 0,
+        movement: row.movement || 0,
+        vibration: row.vibration || 0,
+        rl: row.altitude ? (row.altitude + 525.5) : null,
+        distance: parseFloat(distance.toFixed(6)),
+        fuel: result.fuel,
+        fuel_cost: result.cost,
+        cumulative_distance: parseFloat(totalDistance.toFixed(6)),
+        cumulative_fuel: parseFloat(totalFuel.toFixed(6)),
+        cumulative_fuel_cost: parseFloat(totalFuelCost.toFixed(2))
+      };
+      
+      pathData.push(pointData);
+      previousPoint = row;
+    });
+    
+    console.log(`✅ Fetched ${pathData.length} data points for device ${device_id} (30 days)`);
+    console.log(`💰 Monthly fuel cost: ₹${totalFuelCost.toFixed(2)}`);
+    
+    res.json({
+      status: 'success',
+      device_id,
+      data: pathData,
+      count: pathData.length,
+      totals: {
+        total_distance: parseFloat(totalDistance.toFixed(4)),
+        total_fuel: parseFloat(totalFuel.toFixed(4)),
+        total_fuel_cost: parseFloat(totalFuelCost.toFixed(2)),
+        fuel_price_per_liter: DIESEL_PRICE_PER_LITER,
+        currency: 'INR (₹)',
+        period: '30_days'
+      },
+      time_range: {
+        from: formattedTime,
+        to: new Date().toISOString()
+      }
+    });
+  });
+};
+
+// All devices monthly data (last 30 days)
+const fetchAllDevicesLast30Days = (req, res) => {
+  const { company, region } = req.query;
+  
+  if (!company || !region) {
+    return res.status(400).json({ error: 'Company and region are required' });
+  }
+
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const formattedTime = thirtyDaysAgo.toISOString().slice(0, 19).replace('T', ' ');
+  
+  const deviceQuery = `
+    SELECT DISTINCT UPPER(d.device_id) AS device_id
+    FROM realtime_sensor_data d
+    JOIN devices dev ON UPPER(d.device_id) = UPPER(dev.device_id)
+    JOIN regions r ON dev.region_id = r.region_id
+    WHERE r.company_name = ?
+      AND r.region_name = ?
+      AND d.device_id IN ('D3','D7','D8','D9','D12')
+  `;
+  
+  db.query(deviceQuery, [company, region], (err, devices) => {
+    if (err) {
+      console.error('❌ Database error fetching devices:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    
+    if (!devices.length) {
+      return res.json({
+        status: 'success',
+        data: {},
+        count: 0
+      });
+    }
+    
+    const deviceIds = devices.map(d => d.device_id);
+    const placeholders = deviceIds.map(() => '?').join(',');
+    
+    const dataQuery = `
+      SELECT 
+        device_id,
+        latitude,
+        longitude,
+        altitude,
+        timestamp,
+        pitch,
+        roll,
+        speed,
+        movement,
+        vibration
+      FROM realtime_sensor_data 
+      WHERE device_id IN (${placeholders})
+        AND timestamp >= ?
+        AND latitude IS NOT NULL 
+        AND longitude IS NOT NULL
+        AND latitude != 0 
+        AND longitude != 0
+      ORDER BY device_id, timestamp ASC
+    `;
+    
+    const queryParams = [...deviceIds, formattedTime];
+    
+    db.query(dataQuery, queryParams, (err, results) => {
+      if (err) {
+        console.error('❌ Database error fetching 30-day data:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      const groupedData = {};
+      const deviceTotals = {};
+      
+      deviceIds.forEach(id => {
+        groupedData[id] = [];
+        deviceTotals[id] = {
+          totalDistance: 0,
+          totalFuel: 0,
+          totalFuelCost: 0,
+          previousPoint: null
+        };
+      });
+      
+      results.forEach(row => {
+        const deviceId = row.device_id;
+        
+        if (!groupedData[deviceId]) {
+          groupedData[deviceId] = [];
+          deviceTotals[deviceId] = {
+            totalDistance: 0,
+            totalFuel: 0,
+            totalFuelCost: 0,
+            previousPoint: null
+          };
+        }
+        
+        let distance = 0;
+        let timeDiffHours = 0;
+        
+        if (deviceTotals[deviceId].previousPoint) {
+          const prev = deviceTotals[deviceId].previousPoint;
+          
+          distance = haversineKm(
+            [prev.latitude, prev.longitude],
+            [row.latitude, row.longitude]
+          );
+          
+          if (deviceId === 'D7') {
+            const currentTime = new Date(row.timestamp);
+            const prevTime = new Date(prev.timestamp);
+            timeDiffHours = (currentTime - prevTime) / 3600000;
+          }
+        }
+        
+        const result = calculateFuelAndCost(distance, deviceId, timeDiffHours);
+        
+        deviceTotals[deviceId].totalDistance += distance;
+        deviceTotals[deviceId].totalFuel += result.fuel;
+        deviceTotals[deviceId].totalFuelCost += result.cost;
+        
+        const pointData = {
+          pos: [row.latitude, row.longitude],
+          timestamp: row.timestamp,
+          altitude: row.altitude || 0,
+          pitch: row.pitch || 0,
+          roll: row.roll || 0,
+          speed: row.speed || 0,
+          movement: row.movement || 0,
+          vibration: row.vibration || 0,
+          rl: row.altitude ? (row.altitude + 525.5) : null,
+          distance: parseFloat(distance.toFixed(6)),
+          fuel: result.fuel,
+          fuel_cost: result.cost,
+          cumulative_distance: parseFloat(deviceTotals[deviceId].totalDistance.toFixed(6)),
+          cumulative_fuel: parseFloat(deviceTotals[deviceId].totalFuel.toFixed(6)),
+          cumulative_fuel_cost: parseFloat(deviceTotals[deviceId].totalFuelCost.toFixed(2))
+        };
+        
+        groupedData[deviceId].push(pointData);
+        deviceTotals[deviceId].previousPoint = row;
+      });
+      
+      console.log(`✅ Fetched 30-day data for devices: ${deviceIds.join(', ')}`);
+      
+      let overallTotalDistance = 0;
+      let overallTotalFuel = 0;
+      let overallTotalFuelCost = 0;
+      
+      for (const deviceId in deviceTotals) {
+        overallTotalDistance += deviceTotals[deviceId].totalDistance;
+        overallTotalFuel += deviceTotals[deviceId].totalFuel;
+        overallTotalFuelCost += deviceTotals[deviceId].totalFuelCost;
+      }
+      
+      res.json({
+        status: 'success',
+        company,
+        region,
+        data: groupedData,
+        device_count: deviceIds.length,
+        total_points: results.length,
+        totals: {
+          overall_distance: parseFloat(overallTotalDistance.toFixed(4)),
+          overall_fuel: parseFloat(overallTotalFuel.toFixed(4)),
+          overall_fuel_cost: parseFloat(overallTotalFuelCost.toFixed(2)),
+          fuel_price_per_liter: DIESEL_PRICE_PER_LITER,
+          currency: 'INR (₹)',
+          period: '30_days',
+          by_device: Object.keys(deviceTotals).reduce((acc, deviceId) => {
+            acc[deviceId] = {
+              total_distance: parseFloat(deviceTotals[deviceId].totalDistance.toFixed(4)),
+              total_fuel: parseFloat(deviceTotals[deviceId].totalFuel.toFixed(4)),
+              total_fuel_cost: parseFloat(deviceTotals[deviceId].totalFuelCost.toFixed(2))
+            };
+            return acc;
+          }, {})
+        },
+        time_range: {
+          from: formattedTime,
+          to: new Date().toISOString()
+        }
+      });
+    });
+  });
 };
 
 
+const fetchAllDevicesLast30DaysExcel = (req, res) => {
+  const { company, region } = req.query;
 
-const sendMailToCompany = async (companyMail, userDetails) => {
-  try {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      host: 'smtp.gmail.com',
-      secure: false,
-      port: 587,
-      auth: {
-        user: 'haritha@velastra.co',
-        pass: 'zbch zaom fcxs kmlf',
-      },
-      tls: { rejectUnauthorized: false },
-    });
-
-
-    const encodedPhone = encodeURIComponent(userDetails.phone_no);
-
-    const mailOptions = {
-      from: 'haritha@velastra.co',
-      to: companyMail,
-      subject: 'New User Registration – Grant Access Required',
-      html: `
-        <p>Hello,</p>
-        <p>A new user has registered:</p>
-        <ul>
-          <li><b>Name:</b> ${userDetails.name}</li>
-          <li><b>Email:</b> ${userDetails.email}</li>
-          <li><b>Phone:</b> ${userDetails.phone_no}</li>
-          <li><b>Company:</b> ${userDetails.company_name}</li>
-        </ul>
-        <p>Please take an action:</p>
-        <a href="http://104.154.141.198:5002/update-status?phone_no=${encodedPhone}&status=verified"
-           style="padding:10px 20px;background-color:#4CAF50;color:white;text-decoration:none;border-radius:4px;">✅ Approve</a>
-        &nbsp;
-        <a href="http://104.154.141.198:5002/update-status?phone_no=${encodedPhone}&status=rejected"
-           style="padding:10px 20px;background-color:#f44336;color:white;text-decoration:none;border-radius:4px;">❌ Reject</a>
-        &nbsp;
-        <a href="http://104.154.141.198:5002/update-status?phone_no=${encodedPhone}&status=in%20progress"
-           style="padding:10px 20px;background-color:#ff9800;color:white;text-decoration:none;border-radius:4px;">⏳ In Progress</a>
-        <br><br>
-        <p>— Vistaarnksh Team</p>
-      `,
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ Email successfully sent to ${companyMail}:`, info.response);
-  } catch (error) {
-    console.error('❌ Failed to send email to company:', {
-      message: error.message,
-      stack: error.stack,
-    });
+  if (!company || !region) {
+    return res.status(400).json({ error: 'Company and region are required' });
   }
-};*/
+
+  // ---------- FIXED DATE RANGE (VARCHAR TIMESTAMP FORMAT) ----------
+  // DB timestamp format: 1/4/2026, 11:11:37 AM
+  const formattedStartTime = '1/4/2026, 6:00:00 AM';
+  const formattedEndTime   = '1/5/2026, 6:00:00 AM';
+
+  // ---------- DEVICE LIST ----------
+  const deviceQuery = `
+    SELECT DISTINCT UPPER(d.device_id) AS device_id
+    FROM realtime_sensor_data d
+    JOIN devices dev ON UPPER(d.device_id) = UPPER(dev.device_id)
+    JOIN regions r ON dev.region_id = r.region_id
+    WHERE r.company_name = ?
+      AND r.region_name = ?
+      AND UPPER(d.device_id) IN ('D3','D7','D8','D9','D12')
+  `;
+
+  db.query(deviceQuery, [company, region], (err, devices) => {
+    if (err) return res.status(500).json({ error: 'Device fetch failed', details: err });
+    if (!devices.length) return res.status(404).json({ message: 'No devices found' });
+
+    const deviceIds = devices.map(d => d.device_id.toUpperCase());
+    const placeholders = deviceIds.map(() => '?').join(',');
+
+    // ---------- DATA QUERY (VARCHAR → DATETIME SAFE) ----------
+    const dataQuery = `
+      SELECT
+        UPPER(device_id) AS device_id,
+        latitude,
+        longitude,
+        altitude,
+        timestamp,
+        pitch,
+        roll,
+        speed
+      FROM realtime_sensor_data
+      WHERE UPPER(device_id) IN (${placeholders})
+        AND STR_TO_DATE(timestamp, '%m/%d/%Y, %h:%i:%s %p')
+            >= STR_TO_DATE(?, '%m/%d/%Y, %h:%i:%s %p')
+        AND STR_TO_DATE(timestamp, '%m/%d/%Y, %h:%i:%s %p')
+            <  STR_TO_DATE(?, '%m/%d/%Y, %h:%i:%s %p')
+        AND latitude IS NOT NULL
+        AND longitude IS NOT NULL
+        AND latitude != 0
+        AND longitude != 0
+      ORDER BY
+        device_id,
+        STR_TO_DATE(timestamp, '%m/%d/%Y, %h:%i:%s %p') ASC
+    `;
+
+    db.query(
+      dataQuery,
+      [...deviceIds, formattedStartTime, formattedEndTime],
+      async (err, results) => {
+        if (err) return res.status(500).json({ error: 'Data fetch failed', details: err });
+
+        // ---------- DEVICE STATE ----------
+        const deviceState = {};
+        deviceIds.forEach(id => {
+          deviceState[id] = {
+            prev: null,
+            rows: [],
+            totalDistance: 0,
+            totalFuel: 0,
+            totalFuelCost: 0
+          };
+        });
+
+        // ---------- PROCESS DATA ----------
+        for (const row of results) {
+          const deviceId = row.device_id.toUpperCase();
+          const device = deviceState[deviceId];
+
+          let distance = 0;
+          let timeDiffHours = 0;
+
+          const currentTime = new Date(Date.parse(row.timestamp));
+
+          if (device.prev) {
+            distance = haversineKm(
+              [device.prev.latitude, device.prev.longitude],
+              [row.latitude, row.longitude]
+            );
+
+            const prevTime = new Date(Date.parse(device.prev.timestamp));
+            timeDiffHours = (currentTime - prevTime) / 3600000;
+          }
+
+          const fuelResult = calculateFuelAndCost(distance, deviceId, timeDiffHours);
+
+          device.totalDistance += distance;
+          device.totalFuel += fuelResult.fuel;
+          device.totalFuelCost += fuelResult.cost;
+
+          device.rows.push({
+            device_id: deviceId,
+            timestamp: currentTime, // IMPORTANT: Date object
+            latitude: row.latitude,
+            longitude: row.longitude,
+            altitude: row.altitude || 0,
+            pitch: row.pitch || 0,
+            roll: row.roll || 0,
+            speed: row.speed || 0,
+            distance,
+            fuel: fuelResult.fuel,
+            fuel_cost: fuelResult.cost,
+            cum_distance: device.totalDistance,
+            cum_fuel: device.totalFuel,
+            cum_fuel_cost: device.totalFuelCost
+          });
+
+          device.prev = row;
+        }
+
+        // ---------- CREATE EXCEL ----------
+        const workbook = new ExcelJS.Workbook();
+
+        // DATA SHEET
+        const dataSheet = workbook.addWorksheet('DATA (Latest First)');
+        dataSheet.columns = [
+          { header: 'DEVICE ID', key: 'device_id', width: 12 },
+          { header: 'TIMESTAMP', key: 'timestamp', width: 24 },
+          { header: 'LATITUDE', key: 'latitude', width: 14 },
+          { header: 'LONGITUDE', key: 'longitude', width: 14 },
+          { header: 'ALTITUDE', key: 'altitude', width: 12 },
+          { header: 'PITCH', key: 'pitch', width: 8 },
+          { header: 'ROLL', key: 'roll', width: 8 },
+          { header: 'DISTANCE (KM)', key: 'distance', width: 14 },
+          { header: 'FUEL (L)', key: 'fuel', width: 10 },
+          { header: 'FUEL COST (₹)', key: 'fuel_cost', width: 14 }
+        ];
+
+        deviceIds.forEach(id => {
+          deviceState[id].rows.slice().reverse().forEach(r => {
+            dataSheet.addRow({
+              device_id: r.device_id,
+              timestamp: r.timestamp,
+              latitude: r.latitude,
+              longitude: r.longitude,
+              altitude: r.altitude,
+              pitch: r.pitch,
+              roll: r.roll,
+              speed: r.speed,
+              distance: r.distance.toFixed(6),
+              fuel: r.fuel.toFixed(4),
+              fuel_cost: r.fuel_cost.toFixed(2),
+              cum_distance: r.cum_distance.toFixed(6),
+              cum_fuel: r.cum_fuel.toFixed(4),
+              cum_fuel_cost: r.cum_fuel_cost.toFixed(2)
+            });
+          });
+        });
+
+        // FORCE AM / PM FORMAT
+        dataSheet.getColumn('timestamp').numFmt = 'm/d/yyyy, h:mm:ss AM/PM';
+
+        // SUMMARY SHEET
+        const summarySheet = workbook.addWorksheet('SUMMARY');
+        summarySheet.columns = [
+          { header: 'DEVICE ID', key: 'device_id', width: 12 },
+          { header: 'TOTAL DISTANCE (KM)', key: 'distance', width: 20 },
+          { header: 'TOTAL FUEL (L)', key: 'fuel', width: 18 },
+          { header: 'TOTAL FUEL COST (₹)', key: 'fuel_cost', width: 22 }
+        ];
+
+        deviceIds.forEach(id => {
+          const d = deviceState[id];
+          summarySheet.addRow({
+            device_id: id,
+            distance: d.totalDistance.toFixed(4),
+            fuel: d.totalFuel.toFixed(4),
+            fuel_cost: d.totalFuelCost.toFixed(2)
+          });
+        });
+
+        // ---------- SEND EXCEL ----------
+        res.setHeader(
+          'Content-Type',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+          'Content-Disposition',
+          'attachment; filename=devices_Jan4_6AM_to_Jan5_6AM.xlsx'
+        );
+
+        await workbook.xlsx.write(res);
+        res.end();
+      }
+    );
+  });
+};
+
 
 
 module.exports = {
@@ -402,87 +1273,6 @@ module.exports = {
         }
     );
 },
-/*  register: (req, res) => {
-    const { name, phone_no, email, password, sector_name, company_name, region_ids } = req.body;
-    const randomNumber = generateRandomNumber();
-    const access = 'in progress';
-
-    if (!name || !email || !password || !phone_no || !sector_name || !company_name || !region_ids) {
-      return res.status(400).json({ message: 'All fields are required including sector' });
-    }
-     if (!/^\d{4}$/.test(password)) {
-      return res.status(400).json({ message: 'PIN must be exactly 4 digits' });
-    }
-
-    const checkQuery = `SELECT * FROM users WHERE phone_no = ? OR email = ?`;
-    db.query(checkQuery, [phone_no, email], (err, existingUsers) => {
-      if (err) {
-        console.error('Error checking existing user:', err);
-        return res.status(500).json({ message: 'Database error during duplicate check' });
-      }
-
-      if (existingUsers.length > 0) {
-        return res.status(409).json({
-          message: 'User already registered with this phone number or email',
-        });
-      }
-
-      const insertQuery = `
-        INSERT INTO users (user_id, name, phone_no, email, password, access, sector_name, company_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `;
-
-      db.query(
-        insertQuery,
-        [randomNumber, name, phone_no, email, password, access, sector_name, company_name],
-        (err, result) => {
-          if (err) {
-            console.error('Error inserting user:', err);
-            return res.status(500).json({ message: 'Database error during insert' });
-          }
-
-          // Insert user_regions entries
-        const regionInsertValues = region_ids.map(region_id => [randomNumber, region_id]);
-        const regionQuery = `INSERT INTO user_regions (user_id, region_id) VALUES ?`;
-
-        db.query(regionQuery, [regionInsertValues], (err) => {
-          if (err) {
-            console.error('Error assigning regions to user:', err);
-            return res.status(500).json({ message: 'Database error assigning regions' });
-          }
-
-          
-          //sendStatusMailToUser(email, name, 'in progress');
-
-
-          const query1 = `SELECT company_mail FROM companies WHERE sector_name = ? AND company_name = ?`;
-          db.query(query1, [sector_name, company_name], (err, results) => {
-            if (err) {
-              console.error('Error fetching company mail:', err);
-              return;
-            }
-
-            if (results.length > 0) {
-              const companyMail = results[0].company_mail;
-              //sendMailToCompany(companyMail, { name, email, phone_no, sector_name, company_name });
-            }
-          });
-
-          return res.status(201).json({
-            status: 'success',
-            message: 'Registration successful! Approval may take up to 24 hours',
-            user_id: randomNumber,
-            name,
-            email,
-            sector_name,
-            company_name,
-            region_ids,
-          });
-          });
-        }
-      );
-    });
-  },*/
 
   signin: (req, res) => {
   const { phone_no, password } = req.body;
@@ -564,7 +1354,7 @@ module.exports = {
       });
     });
   },
-
+  
   receiveSensorData: (req, res) => {
     const { device_id, temperature, humidity, dust } = req.body;
 
@@ -594,224 +1384,132 @@ module.exports = {
     });
   },
 
-/*updateStatus: (req, res) => {
-  const { phone_no, status } = req.query;
+insertRealtimeData: (req, res) => {
+  const {
+    device_id,
+    latitude,
+    longitude,
+    altitude,
+    gps_status,
+    z_axis,
+    movement,
+    pitch,
+    roll,
+    speed,
+    vibration,
+    timestamp   // ✅ accepted from backend
+  } = req.body;
 
-  if (!phone_no || !status) {
-    return res.status(400).send('Missing phone_no or status');
+  // ------------------------------------------
+  // Validate required fields
+  // ------------------------------------------
+  if (!device_id || latitude === undefined || longitude === undefined) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+   console.log(`📡 Received data from device ${device_id}`);
+   console.log(req.body);
+
+
+  // ------------------------------------------
+  // Optional: log device timestamp (NOT inserted)
+  // ------------------------------------------
+  if (timestamp) {
+    console.log("⏱ Device sent timestamp:", timestamp);
   }
 
-  const updateQuery = `UPDATE users SET access = ? WHERE phone_no = ?`;
-  db.query(updateQuery, [status, phone_no], (err, result) => {
-    if (err) {
-      console.error('❌ Database update error:', err);
-      return res.status(500).send('Database error');
-    }
-
-    const fetchQuery = `SELECT email, name FROM users WHERE phone_no = ?`;
-    db.query(fetchQuery, [phone_no], async (err, rows) => {
-      if (err || rows.length === 0) {
-        console.error('❌ Error fetching user:', err);
-        return res.status(404).send(`
-          <html>
-            <head><script>alert("❌ User not found."); window.close();</script></head>
-            <body></body>
-          </html>
-        `);
-      }
-
-      const { email, name } = rows[0];
-      await sendStatusMailToUser(email, name, status);
-
-      return res.send(`
-        <html>
-          <head>
-            <script>
-              alert("✅ Status updated to '${status.toUpperCase()}' for ${name}.");
-              window.location.href = "https://vistaarnksh.com"; // Change if needed
-            </script>
-          </head>
-          <body></body>
-        </html>
-      `);
-    });
-  });
-},*/
-
- /* getDashboard: (req, res) => {
-    const { company_name } = req.body;
-    if (!company_name) return res.status(400).json({ message: 'Company name is required' });
-
-    const getCompanyIdQuery = `SELECT company_id FROM companies WHERE company_name = ?`;
-
-    db.query(getCompanyIdQuery, [company_name], (err, companyResult) => {
-      if (err) return res.status(500).json({ error: 'Database error' });
-      if (companyResult.length === 0)
-        return res.status(404).json({ message: 'Company not found' });
-
-      const companyId = companyResult[0].company_id;
-
-      const getDashboardQuery = `
-        SELECT * FROM dashboards d
-        LEFT JOIN dashboard_data dd ON d.dashboard_id = dd.dashboard_id
-        WHERE d.company_id = ?
-      `;
-
-      db.query(getDashboardQuery, [companyId], (err, result) => {
-        if (err) return res.status(500).json({ error: 'Database error' });
-        if (result.length > 0) {
-          return res.status(200).json({ status: 'success', data: result });
-        } else {
-          return res.status(404).json({ message: 'No dashboard data found' });
-        }
-      });
-    });
-  },
-
-  getDashboardDetails: (req, res) => {
-    const { user_id } = req.body;
-    if (!user_id) return res.status(400).json({ message: 'User ID is required' });
-
-    const query = `
-      SELECT dd.*, d.*
-      FROM users u
-      JOIN companies c ON u.company_name = c.company_name
-      JOIN dashboards d ON c.company_id = d.company_id
-      JOIN dashboard_data dd ON d.dashboard_id = dd.dashboard_id
-      WHERE u.user_id = ? AND u.access = 'verified'
-    `;
-
-    db.query(query, [user_id], (err, result) => {
-      if (err) return res.status(500).json({ error: 'Database error' });
-
-      if (result.length > 0) {
-        return res.status(200).json({ status: 'success', data: result });
-      } else {
-        return res.status(404).json({ message: 'No dashboard data found' });
-      }
-    });
-  }*/
- /*fetchDashboardData: (req, res) => {
-  const { company, sector } = req.query;
-
-  if (!company || !sector) {
-    return res.status(400).json({ error: 'Company and sector are required' });
-  }
-
-  // Step 1: Verify that the company exists in this sector (using companies table)
-  const verifyQuery = `
-    SELECT 1 FROM companies
-    WHERE company_name = ? AND sector_name = ?
-    LIMIT 1;
+  // ------------------------------------------
+  // SQL INSERT → timestamp is ALWAYS NOW()
+  // ------------------------------------------
+  const query = `
+    INSERT INTO realtime_sensor_data (
+      device_id,
+      timestamp,
+      latitude,
+      longitude,
+      altitude,
+      gps_status,
+      z_axis,
+      movement,
+      pitch,
+      roll,
+      speed,
+      vibration
+    )
+    VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
-  db.query(verifyQuery, [company, sector], (err, verifyResults) => {
+  const values = [
+    device_id,
+    latitude,
+    longitude,
+    altitude || null,
+    gps_status || null,
+    z_axis || null,
+    movement || null,
+    pitch || null,
+    roll || null,
+    speed || null,
+    vibration || null
+  ];
+
+  // ------------------------------------------
+  // Execute query
+  // ------------------------------------------
+  db.query(query, values, (err, result) => {
     if (err) {
-      console.error('❌ Error verifying company/sector:', err.sqlMessage || err);
-      return res.status(500).json({ error: 'Database error while verifying sector/company' });
+      console.error("❌ Database insert error:", err);
+      return res.status(500).json({ error: "Database insert error" });
     }
 
-    if (verifyResults.length === 0) {
-      return res.status(404).json({ error: 'No matching company found in this sector' });
-    }
-
-    // Step 2: Fetch devices for this company
-    const deviceQuery = `
-      SELECT device_id
-      FROM devices
-      WHERE company_name = ?;
-    `;
-
-    db.query(deviceQuery, [company], (err, deviceResults) => {
-      if (err) {
-        console.error('❌ Error fetching devices:', err.sqlMessage || err);
-        return res.status(500).json({ error: 'Database error while getting devices' });
-      }
-
-      const deviceIds = deviceResults.map(d => d.device_id);
-      if (deviceIds.length === 0) {
-        return res.status(200).json({ status: 'success', sector, company, devices: [], data: [] });
-      }
-
-      // Step 3: Fetch latest 50 sensor readings for these devices
-      const placeholders = deviceIds.map(() => '?').join(',');
-      const sensorQuery = `
-        SELECT *
-        FROM continuous_miner
-        ORDER BY log_timestamp DESC
-        LIMIT 50;
-      `;
-
-      db.query(sensorQuery, deviceIds, (err, sensorResults) => {
-        if (err) {
-          console.error('❌ Error fetching sensor data:', err.sqlMessage || err);
-          return res.status(500).json({ error: 'Database error while getting sensor data' });
-        }
-
-        res.json({
-          status: 'success',
-          sector,
-          company,
-          devices: deviceIds,
-          data: sensorResults
-        });
-      });
+    res.json({
+      status: "success",
+      inserted_id: result.insertId
     });
   });
-}*/
-//this is all sector and company 
+},
+
+
+getLast10ZAxis: (req, res) => {
+  const query = `
+    SELECT device_id, pitch AS z_axis, timestamp
+    FROM (
+      SELECT device_id, pitch, timestamp,
+             ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY timestamp DESC) as rn
+      FROM realtime_sensor_data
+      WHERE device_id LIKE 'D%'
+    ) t
+    WHERE rn <= 10
+    ORDER BY device_id, timestamp DESC
+  `;
+  pool.query(query, (err, rows) => {
+    if (err) {
+      console.error('Error fetching last 10 z_axis per Hauler:', err);
+      return res.status(500).json({ error: "Error fetching z_axis values" });
+    }
+
+    // Group data by device_id
+    const haulerData = {};
+    rows.forEach(row => {
+      const equipment = row.device_id;
+      if (!haulerData[equipment]) {
+        haulerData[equipment] = [];
+      }
+      haulerData[equipment].push({
+        z_axis: Number(row.z_axis), // Use z_axis instead of pitch
+        timestamp: row.timestamp
+      });
+    });
+
+    // Send response
+    res.json(haulerData);
+  });
+},
 registerToken,
 fetchDashboardData,
-/*fetchDashboardData: (req, res) => {
-  const { company, region } = req.query;
-  // :one: Validate required parameters
-  if (!company || !region) {
-    return res.status(400).json({ error: 'Company and region are required' });
-  }
-  // :two: Get devices for this company + region
-  const deviceQuery = `
-    SELECT d.device_id
-    FROM devices d
-    JOIN regions r ON d.region_id = r.region_id
-    WHERE r.company_name = ?
-      AND r.region_name = ?
-  `;
-  const params = [company, region];
-  db.query(deviceQuery, params, (err, deviceResults) => {
-    if (err) {
-      console.error(":x: Error fetching devices:", err.sqlMessage || err);
-      return res.status(500).json({ error: "Database error while fetching devices" });
-    }
-    if (deviceResults.length === 0) {
-      return res.status(404).json({ error: "No devices found for this company/region" });
-    }
-    const deviceIds = deviceResults.map(d => d.device_id);
-    // :three: Fetch latest sensor data for these devices
-    const placeholders = deviceIds.map(() => "?").join(",");
-    const sensorQuery = `
-      SELECT *
-      FROM realtime_sensor_data
-      WHERE device_id IN (${placeholders})
-      ORDER BY timestamp DESC
-      LIMIT 6
-    `;
-    db.query(sensorQuery, deviceIds, (err, sensorResults) => {
-      if (err) {
-        console.error(":x: Error fetching sensor data:", err.sqlMessage || err);
-        return res.status(500).json({ error: "Database error while fetching sensor data" });
-      }
-      if (sensorResults.length === 0) {
-        return res.status(404).json({ error: "No sensor data found for this region" });
-      }
-      // :four: Return response
-      res.json({
-        status: "success",
-        company,
-        region,
-        devices: deviceIds,
-        data: sensorResults
-      });
-    });
-  });
-}*/
+// Add these new exports
+fetchLast24HoursData,
+fetchAllDevicesLast24Hours,
+fetchLast30DaysData,
+fetchAllDevicesLast30Days,
+fetchAllDevicesLast30DaysExcel
 }
