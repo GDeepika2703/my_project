@@ -1,26 +1,41 @@
 import 'package:flutter/material.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
+import 'package:flutter/services.dart';
 
 class SignUpPage extends StatefulWidget {
-  const SignUpPage({super.key}); // ✅ Added key
-
+  const SignUpPage({super.key}); // Add const constructor
   @override
-  State<SignUpPage> createState() => _SignUpPageState();
+  _SignUpPageState createState() => _SignUpPageState();
 }
 
 class _SignUpPageState extends State<SignUpPage> {
-  final _nameController = TextEditingController();
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
   final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
+  final _pinController = TextEditingController();
+  final _confirmPinController = TextEditingController();
+  
   String _completePhone = '';
   String? _selectedSector;
-  String? _selectedCompany;
   List<String> _sectors = [];
-  List<String> _companies = [];
-  bool _isPasswordVisible = false;
 
+  String? _selectedCompany;
+  List<String> _companies = [];
+
+  List<Map<String, String>> _regions = [];
+  List<String> _selectedRegionIds = [];
+
+  // ✅ Email regex for validation
+  final RegExp _emailRegex =
+      RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
+
+  // ✅ For hiding/showing PIN fields
+  bool _obscurePin = true;
+  bool _obscureConfirmPin = true;
+  bool _isSignUpPressed=false;
   @override
   void initState() {
     super.initState();
@@ -29,78 +44,128 @@ class _SignUpPageState extends State<SignUpPage> {
 
   Future<void> fetchSectors() async {
     try {
-      final response = await http.get(Uri.parse('http://104.154.141.198:5002/sectors'));
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body) as List;
+      final resp =
+          await http.get(Uri.parse('http://104.154.141.198:5003/sectors'));
+      if (resp.statusCode == 200) {
+        final List<dynamic> data = json.decode(resp.body);
         setState(() {
-          _sectors = data
-              .map((e) => (e['sector_name'] as String?) ?? '')
-              .map((name) => name[0].toUpperCase() + name.substring(1))
-              .toList();
+          _sectors = data.map((s) => s['sector_name'].toString()).toList();
         });
       } else {
         _showAlert('Failed to load sectors.');
       }
-    } catch (_) {
-      _showAlert('Unexpected error fetching sectors.');
+    } catch (e) {
+      _showAlert('Error fetching sectors.');
     }
   }
 
   Future<void> fetchCompaniesBySector(String sector) async {
     try {
-      final response = await http.get(Uri.parse('http://104.154.141.198:5002/getcompanies?sector=$sector'));
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body) as List;
+      final resp = await http.get(Uri.parse(
+          'http://104.154.141.198:5003/getcompanies?sector=$sector'));
+      if (resp.statusCode == 200) {
+        final List<dynamic> data = json.decode(resp.body);
         setState(() {
-          _companies = data.map((e) => e['company_name'].toString()).toList();
+          _companies = data.map((c) => c['company_name'].toString()).toList();
           _selectedCompany = null;
+          _regions = [];
+          _selectedRegionIds = [];
         });
       } else {
         _showAlert('Failed to load companies.');
       }
-    } catch (_) {
-      _showAlert('Unexpected error fetching companies.');
+    } catch (e) {
+      _showAlert('Error fetching companies.');
+    }
+  }
+
+  Future<void> fetchRegionsByCompany(String company) async {
+    try {
+      final resp = await http
+          .get(Uri.parse('http://104.154.141.198:5003/getregions?company=$company'));
+      if (resp.statusCode == 200) {
+        final List<dynamic> data = json.decode(resp.body);
+        setState(() {
+          _regions = data
+              .map((r) => {
+                    'id': r['region_id'].toString(),
+                    'name': r['region_name'].toString(),
+                  })
+              .toList();
+          _selectedRegionIds = [];
+          if (_regions.isEmpty) {
+            _showAlert('No regions available for this company.');
+          }
+        });
+      } else {
+        _showAlert('Failed to load regions.');
+      }
+    } catch (e) {
+      _showAlert('Error fetching regions.');
     }
   }
 
   Future<void> signUp() async {
-    final name = _nameController.text.trim();
+    final firstName = _firstNameController.text.trim();
+    final lastName = _lastNameController.text.trim();
+    final fullName = "$firstName $lastName".trim();
     final phone = _completePhone;
     final email = _emailController.text.trim();
-    final password = _passwordController.text.trim();
-    final sector = _selectedSector ?? '';
-    final company = _selectedCompany ?? '';
+    final pin = _pinController.text.trim();
+    final confirmPin = _confirmPinController.text.trim();
+    final sectorName = _selectedSector ?? '';
+    final companyName = _selectedCompany ?? '';
 
-    if ([name, phone, email, password, sector, company].any((e) => e.isEmpty)) {
-      _showAlert('Please fill in all fields.');
+    if ([firstName, lastName, phone, email, pin, confirmPin, sectorName, companyName]
+            .any((e) => e.isEmpty) ||
+        _selectedRegionIds.isEmpty) {
+      _showAlert('Please fill in all fields and select at least one region.');
       return;
     }
 
-    final url = Uri.parse('http://104.154.141.198:5002/register');
+    // ✅ Email validation before submitting
+    if (!_emailRegex.hasMatch(email)) {
+      _showAlert('Please enter a valid email address.');
+      return;
+    }
+
+    if (pin != confirmPin) {
+      _showAlert('PIN and Confirm PIN do not match.');
+      return;
+    }
+
+    final url = Uri.parse('http://104.154.141.198:5003/register');
     try {
-      final response = await http.post(
+      final resp = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
-          'name': name,
+          'name': fullName,
           'phone_no': phone,
           'email': email,
-          'password': password,
-          'sector_name': sector,
-          'company_name': company,
+          'password': pin,
+          'sector_name': sectorName,
+          'company_name': companyName,
+          'region_ids': _selectedRegionIds,
         }),
       );
 
-      final data = json.decode(response.body);
-      if (response.statusCode == 201 && data['status'] == 'success') {
-        _showAlert('User successfully registered.', onOk: () {
-          Navigator.pushReplacementNamed(context, '/signin');
+      final data = json.decode(resp.body);
+      if (resp.statusCode == 201 && data['status'] == 'success') {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('name', data['name']);
+        await prefs.setString('user_id', data['user_id'].toString());
+        await prefs.setString('company_name', data['company_name']);
+
+        _showAlert('User successfully registered. You will get access once verified.',
+            onOk: () {
+          Navigator.pushReplacementNamed(context, '/');
         });
       } else {
-        _showAlert(data['message'] ?? 'An error occurred.');
+        _showAlert(data['message'] ?? 'Registration failed.');
       }
-    } catch (_) {
-      _showAlert('Something went wrong. Try again later.');
+    } catch (e) {
+      _showAlert('Error during registration.');
     }
   }
 
@@ -115,152 +180,300 @@ class _SignUpPageState extends State<SignUpPage> {
               Navigator.pop(ctx);
               if (onOk != null) onOk();
             },
-            child: const Text('OK'),
+            child: Text('OK'),
           ),
         ],
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(colors: [Colors.pink, Colors.blue]),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: ListView(
-            children: [
-              const SizedBox(height: 80),
-              _buildTextField(_nameController, 'Name'),
-              const SizedBox(height: 10),
-              _buildPhoneField(),
-              const SizedBox(height: 10),
-              _buildTextField(_emailController, 'Email'),
-              const SizedBox(height: 10),
-              _buildPasswordField(),
-              const SizedBox(height: 10),
-              _buildDropdown(
-                hint: 'Select Sector',
-                value: _selectedSector,
-                items: _sectors,
-                onChanged: (value) {
-                  setState(() {
-                    _selectedSector = value;
-                    _selectedCompany = null;
-                    _companies.clear();
-                  });
-                  if (value != null) fetchCompaniesBySector(value);
-                },
-              ),
-              if (_sectors.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.only(top: 8.0),
-                  child: Text(
-                    '⚠️ Failed to load sectors. Please check your network.',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ),
-              if (_companies.isNotEmpty)
-                _buildDropdown(
-                  hint: 'Select Company',
-                  value: _selectedCompany,
-                  items: _companies,
-                  onChanged: (value) {
-                    setState(() {
-                      _selectedCompany = value;
-                    });
-                  },
-                ),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: signUp,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.white),
-                child: const Text('Sign Up', style: TextStyle(color: Colors.black)),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTextField(TextEditingController controller, String label) {
+  // ✅ updated to allow optional inputFormatters
+  Widget _buildBoxField(TextEditingController ctl, String label,
+      {TextInputType type = TextInputType.text,
+       List<TextInputFormatter>? inputFormatters}) {
     return TextField(
-      controller: controller,
-      style: const TextStyle(color: Colors.white),
+      controller: ctl,
+      keyboardType: type,
+      inputFormatters: inputFormatters,
+      style: TextStyle(color: Colors.black),
       decoration: InputDecoration(
         labelText: label,
-        labelStyle: const TextStyle(color: Colors.white),
-        enabledBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.white)),
-        focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.white)),
+        border: OutlineInputBorder(),
+        filled: true,
+        fillColor: Colors.white,
       ),
     );
   }
 
-  Widget _buildPasswordField() {
+  // ✅ Updated PIN field with eye icon
+  Widget _buildPinField(TextEditingController ctl, String label,
+      {required bool obscureText, required VoidCallback toggleVisibility}) {
     return TextField(
-      controller: _passwordController,
-      obscureText: !_isPasswordVisible,
-      style: const TextStyle(color: Colors.white),
+      controller: ctl,
+      obscureText: obscureText,
+      keyboardType: TextInputType.number,
+      inputFormatters: [
+        FilteringTextInputFormatter.digitsOnly,
+        LengthLimitingTextInputFormatter(4),
+      ],
+      style: TextStyle(color: Colors.black),
       decoration: InputDecoration(
-        labelText: 'Password',
-        labelStyle: const TextStyle(color: Colors.white),
-        enabledBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.white)),
-        focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.white)),
+        labelText: label,
+        border: OutlineInputBorder(),
+        filled: true,
+        fillColor: Colors.white,
         suffixIcon: IconButton(
           icon: Icon(
-            _isPasswordVisible ? Icons.visibility : Icons.visibility_off,
-            color: Colors.white,
+            obscureText ? Icons.visibility_off : Icons.visibility,
           ),
-          onPressed: () => setState(() => _isPasswordVisible = !_isPasswordVisible),
+          onPressed: toggleVisibility,
         ),
       ),
     );
   }
 
-  Widget _buildPhoneField() {
-    return Theme(
-      data: Theme.of(context).copyWith(
-        primaryColor: Colors.white,
-        hintColor: Colors.white,
-        inputDecorationTheme: const InputDecorationTheme(
-          enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white)),
-          focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white)),
+  @override
+  Widget build(BuildContext ctx) {
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Colors.lightBlueAccent, Colors.blue[300]!],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
         ),
-      ),
-      child: IntlPhoneField(
-        decoration: const InputDecoration(
-          labelText: 'Phone Number',
-          labelStyle: TextStyle(color: Colors.white),
-        ),
-        initialCountryCode: 'IN',
-        style: const TextStyle(color: Colors.white),
-        onChanged: (phone) => _completePhone = phone.completeNumber,
-      ),
-    );
-  }
+        child: Center(
+          child: SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: 380),
+              child: Container(
+                padding: EdgeInsets.all(20),
+                margin: EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black26,
+                      blurRadius: 10,
+                      spreadRadius: 2,
+                      offset: Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    Text("Registration",
+                        style: TextStyle(
+                            fontSize: 24, fontWeight: FontWeight.bold)),
+                    SizedBox(height: 20),
+                    _buildBoxField(_firstNameController, 'First Name'),
+                    SizedBox(height: 10),
+                    _buildBoxField(_lastNameController, 'Last Name'),
+                    SizedBox(height: 10),
+                    IntlPhoneField(
+                      decoration: InputDecoration(
+                        labelText: 'Phone Number',
+                        border: OutlineInputBorder(),
+                        filled: true,
+                        fillColor: Colors.white,
+                      ),
+                      initialCountryCode: 'IN',
+                      onChanged: (phone) {
+                        setState(() {
+                          _completePhone = phone.completeNumber;
+                        });
+                      },
+                    ),
+                    SizedBox(height: 10),
+                    _buildBoxField(
+                      _emailController,
+                      'Email',
+                      type: TextInputType.emailAddress,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.deny(RegExp(r"\s")),
+                      ],
+                    ),
+                    SizedBox(height: 10),
+                    // ✅ PIN field with eye icon
+                    _buildPinField(
+                      _pinController,
+                      'PIN (Only 4-Digits)',
+                      obscureText: _obscurePin,
+                      toggleVisibility: () {
+                        setState(() {
+                          _obscurePin = !_obscurePin;
+                        });
+                      },
+                    ),
+                    SizedBox(height: 10),
+                    // ✅ Confirm PIN field with eye icon
+                    _buildPinField(
+                      _confirmPinController,
+                      'Confirm PIN',
+                      obscureText: _obscureConfirmPin,
+                      toggleVisibility: () {
+                        setState(() {
+                          _obscureConfirmPin = !_obscureConfirmPin;
+                        });
+                      },
+                    ),
+                    SizedBox(height: 10),
+                    DropdownButtonFormField<String>(
+                      value: _selectedSector,
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(),
+                        labelText: "Select Sector",
+                        filled: true,
+                        fillColor: Colors.white,
+                      ),
+                      items: _sectors.map((s) {
+                        return DropdownMenuItem(value: s, child: Text(s));
+                      }).toList(),
+                      onChanged: (v) {
+                        setState(() {
+                          _selectedSector = v;
+                          _companies = [];
+                          _selectedCompany = null;
+                          _regions = [];
+                          _selectedRegionIds = [];
+                        });
+                        if (v != null) fetchCompaniesBySector(v);
+                      },
+                    ),
+                    SizedBox(height: 10),
+                    if (_companies.isNotEmpty)
+                      DropdownButtonFormField<String>(
+                        value: _selectedCompany,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(),
+                          labelText: "Select Company",
+                          filled: true,
+                          fillColor: Colors.white,
+                        ),
+                        items: _companies.map((c) {
+                          return DropdownMenuItem(value: c, child: Text(c));
+                        }).toList(),
+                        onChanged: (v) {
+                          setState(() {
+                            _selectedCompany = v;
+                            _regions = [];
+                            _selectedRegionIds = [];
+                          });
+                          if (v != null) fetchRegionsByCompany(v);
+                        },
+                      ),
+                    SizedBox(height: 10),
+                    if (_regions.isNotEmpty)
+                      Container(
+                        padding: EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey),
+                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.white,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            CheckboxListTile(
+                              title: Text('Select All'),
+                              value: _selectedRegionIds.length == _regions.length &&
+                                  _regions.isNotEmpty,
+                              onChanged: (val) {
+                                setState(() {
+                                  if (val == true) {
+                                    _selectedRegionIds =
+                                        _regions.map((r) => r['id']!).toList();
+                                  } else {
+                                    _selectedRegionIds.clear();
+                                  }
+                                });
+                              },
+                              controlAffinity: ListTileControlAffinity.leading,
+                            ),
+                            ..._regions.map((region) {
+                              return CheckboxListTile(
+                                title: Text(region['name']!),
+                                value: _selectedRegionIds.contains(region['id']),
+                                onChanged: (val) {
+                                  setState(() {
+                                    if (val == true) {
+                                      _selectedRegionIds.add(region['id']!);
+                                    } else {
+                                      _selectedRegionIds.remove(region['id']);
+                                    }
+                                  });
+                                },
+                                controlAffinity: ListTileControlAffinity.leading,
+                              );
+                            }).toList(),
+                          ],
+                        ),
+                      ),
+                    SizedBox(height: 20),
+                    GestureDetector(
+                      onTapDown: (_) {
+                        setState(() {
+                          _isSignUpPressed = true;
+                        });
+                      },
+                      onTapUp: (_) {
+                        setState(() {
+                          _isSignUpPressed = false;
+                        });
+                        signUp(); // Trigger your existing signup logic
+                      },
+                      onTapCancel: () {
+                        setState(() {
+                          _isSignUpPressed = false;
+                        });
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 150),
+                        curve: Curves.easeInOut,
+                        width: double.infinity,
+                        height: 50,
+                        decoration: BoxDecoration(
+                          color: _isSignUpPressed ? Colors.blue[800] : Colors.blue[600],
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [
+                            if (!_isSignUpPressed)
+                              BoxShadow(
+                                color: Colors.black26,
+                                blurRadius: 6,
+                                offset: Offset(0, 3),
+                              ),
+                          ],
+                        ),
+                        alignment: Alignment.center,
+                        child: const Text(
+                          'Sign Up',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
 
-  Widget _buildDropdown({
-    required String hint,
-    required String? value,
-    required List<String> items,
-    required ValueChanged<String?> onChanged,
-  }) {
-    return DropdownButton<String>(
-      value: value,
-      hint: Text(hint, style: const TextStyle(color: Colors.white)),
-      dropdownColor: Colors.white,
-      isExpanded: true,
-      onChanged: onChanged,
-      items: items.map((item) {
-        return DropdownMenuItem<String>(
-          value: item,
-          child: Text(item, style: const TextStyle(color: Colors.black)),
-        );
-      }).toList(),
+                    SizedBox(height: 10),
+                    TextButton(
+                      onPressed: () =>
+                          Navigator.pushReplacementNamed(context, '/signin'),
+                      child: Text(
+                        "Already registered? Sign In",
+                        style: TextStyle(decoration: TextDecoration.underline),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
